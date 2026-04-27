@@ -1,0 +1,13 @@
+# Root-page SEO and default-file hygiene audit.
+id: web_seo_basics
+name: SEO metadata and default-file hygiene
+version: 0.1.0
+entrypoint: run.py
+runtime: python
+triggers:
+  any:
+    - entity: site_profile
+limits:
+  timeout_seconds: 25
+  memory_mb: 128
+env: []

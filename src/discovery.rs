@@ -292,8 +292,8 @@ fn inspect_host(host: &str, apex: &str, zone_dump: &ZoneDump) -> Result<HostInsp
     let mut new_hosts = BTreeSet::new();
 
     let liveness = check_host_liveness(host);
-    let alive = matches!(liveness, HostLiveness::Alive);
-    let dead_host = match &liveness {
+    let mut alive = matches!(liveness, HostLiveness::Alive);
+    let mut dead_host = match &liveness {
         HostLiveness::Dead(reason) => Some(DeadHost {
             host: host.to_string(),
             reason: reason.clone(),
@@ -339,70 +339,99 @@ fn inspect_host(host: &str, apex: &str, zone_dump: &ZoneDump) -> Result<HostInsp
             ));
         }
 
+        let mut surface = None;
+        let mut site_profile = None;
+        if alive {
+            let observed = fetch_surface(host)?;
+            if let Some(reason) = detect_surface_failure(&observed) {
+                alive = false;
+                dead_host = Some(DeadHost {
+                    host: host.to_string(),
+                    reason,
+                });
+            } else {
+                let mut surface_signals = Vec::new();
+                if let Some(text) = observed.body.as_deref() {
+                    for extracted in extract_hosts(text) {
+                        if extracted != host && extracted != apex {
+                            new_hosts.insert(extracted);
+                        }
+                    }
+                    surface_signals.extend(extract_signals(text));
+                }
+                if let Some(ref robots) = observed.robots {
+                    for extracted in extract_hosts(robots) {
+                        if extracted != host && extracted != apex {
+                            new_hosts.insert(extracted);
+                        }
+                    }
+                    surface_signals.extend(extract_signals(robots));
+                }
+                if let Some(ref sitemap) = observed.sitemap {
+                    for extracted in extract_hosts(sitemap) {
+                        if extracted != host && extracted != apex {
+                            new_hosts.insert(extracted);
+                        }
+                    }
+                    surface_signals.extend(extract_signals(sitemap));
+                }
+                if let Some(ref wp_sitemap) = observed.wp_sitemap {
+                    for extracted in extract_hosts(wp_sitemap) {
+                        if extracted != host && extracted != apex {
+                            new_hosts.insert(extracted);
+                        }
+                    }
+                    surface_signals.extend(extract_signals(wp_sitemap));
+                }
+
+                site_profile = classify_site(host, &observed, surface_signals);
+            }
+
+            surface = Some(observed);
+        }
+
+        let scheme = surface
+            .as_ref()
+            .map(|observed| observed.scheme.as_str())
+            .unwrap_or("https");
+        let port = if scheme == "http" { 80 } else { 443 };
         let mut web_attrs = vec![
             ("host".to_string(), json!(host)),
-            ("scheme".to_string(), json!("https")),
-            ("port".to_string(), json!(443)),
+            ("scheme".to_string(), json!(scheme)),
+            ("port".to_string(), json!(port)),
             ("alive".to_string(), json!(alive)),
             ("addresses".to_string(), json!(addresses)),
+            (
+                "psi_eligible".to_string(),
+                json!(
+                    alive
+                        && surface
+                            .as_ref()
+                            .map(surface_is_psi_eligible)
+                            .unwrap_or(false)
+                ),
+            ),
         ];
         if let Some(target) = cname_target.as_ref() {
             web_attrs.push(("cname_target".to_string(), json!(target)));
         }
-
-        let mut site_profile = None;
-        if alive {
-            let surface = fetch_surface(host)?;
-            let mut surface_signals = Vec::new();
-            if let Some(text) = surface.body.as_deref() {
-                for extracted in extract_hosts(text) {
-                    if extracted != host && extracted != apex {
-                        new_hosts.insert(extracted);
-                    }
-                }
-                surface_signals.extend(extract_signals(text));
+        if let Some(dead) = dead_host.as_ref() {
+            web_attrs.push(("dead_reason".to_string(), json!(&dead.reason)));
+        }
+        if let Some(observed) = surface.as_ref() {
+            web_attrs.push(("body_present".to_string(), json!(observed.has_body())));
+            web_attrs.push(("status_code".to_string(), json!(observed.status_code)));
+            web_attrs.push(("server_banner".to_string(), json!(observed.server_banner)));
+            web_attrs.push(("x_powered_by".to_string(), json!(observed.x_powered_by)));
+            web_attrs.push(("content_type".to_string(), json!(observed.content_type)));
+        }
+        if let Some(profile) = site_profile.as_ref() {
+            web_attrs.push(("site_type".to_string(), json!(&profile.kind)));
+            if let Some(provider) = &profile.provider {
+                web_attrs.push(("site_provider".to_string(), json!(provider)));
             }
-            if let Some(ref robots) = surface.robots {
-                for extracted in extract_hosts(robots) {
-                    if extracted != host && extracted != apex {
-                        new_hosts.insert(extracted);
-                    }
-                }
-                surface_signals.extend(extract_signals(robots));
-            }
-            if let Some(ref sitemap) = surface.sitemap {
-                for extracted in extract_hosts(sitemap) {
-                    if extracted != host && extracted != apex {
-                        new_hosts.insert(extracted);
-                    }
-                }
-                surface_signals.extend(extract_signals(sitemap));
-            }
-            if let Some(ref wp_sitemap) = surface.wp_sitemap {
-                for extracted in extract_hosts(wp_sitemap) {
-                    if extracted != host && extracted != apex {
-                        new_hosts.insert(extracted);
-                    }
-                }
-                surface_signals.extend(extract_signals(wp_sitemap));
-            }
-
-            if let Some(classification) = classify_site(host, &surface, surface_signals) {
-                web_attrs.push(("site_type".to_string(), json!(&classification.kind)));
-                if let Some(provider) = &classification.provider {
-                    web_attrs.push(("site_provider".to_string(), json!(provider)));
-                }
-                web_attrs.push((
-                    "site_confidence".to_string(),
-                    json!(classification.confidence),
-                ));
-                web_attrs.push(("site_signals".to_string(), json!(&classification.signals)));
-                site_profile = Some(classification);
-            }
-
-            web_attrs.push(("server_banner".to_string(), json!(surface.server_banner)));
-            web_attrs.push(("x_powered_by".to_string(), json!(surface.x_powered_by)));
-            web_attrs.push(("content_type".to_string(), json!(surface.content_type)));
+            web_attrs.push(("site_confidence".to_string(), json!(profile.confidence)));
+            web_attrs.push(("site_signals".to_string(), json!(&profile.signals)));
         }
 
         facts.push(Fact::with_attrs(
@@ -445,6 +474,9 @@ fn inspect_host(host: &str, apex: &str, zone_dump: &ZoneDump) -> Result<HostInsp
         ("port".to_string(), json!(443)),
         ("alive".to_string(), json!(alive)),
     ];
+    if let Some(dead) = dead_host.as_ref() {
+        web_attrs.push(("dead_reason".to_string(), json!(&dead.reason)));
+    }
     if let Some(target) = cname_target.as_ref() {
         web_attrs.push(("cname_target".to_string(), json!(target)));
     }
@@ -493,9 +525,12 @@ fn collect_domain_mail_facts(
         ));
 
         signals.push(format!("mx:{}", mx.exchange));
-        if is_same_domain_or_subdomain(&mx.exchange, apex) {
-            mx_hosts.push(mx.exchange.clone());
-        }
+        mx_hosts.push(mx.exchange.clone());
+    }
+
+    let provider = infer_mail_provider(&mx_hosts, apex);
+    if let Some(provider_name) = provider.clone() {
+        signals.push(format!("mx-provider:{provider_name}"));
     }
 
     let spf_records = query_txt_records(apex, zone_dump)?;
@@ -555,7 +590,7 @@ fn collect_domain_mail_facts(
         site_profiles.push(SiteProfile {
             host: apex.to_string(),
             kind: "mail".to_string(),
-            provider: mx_hosts.first().cloned(),
+            provider: provider.clone(),
             confidence: if mx_hosts.is_empty() { 0.75 } else { 0.95 },
             signals: signals.clone(),
         });
@@ -566,7 +601,8 @@ fn collect_domain_mail_facts(
             format!("service_profile:mail:{}", apex),
             vec![
                 ("role".to_string(), json!("mail")),
-                ("provider".to_string(), json!(mx_hosts.first().cloned())),
+                ("provider".to_string(), json!(provider)),
+                ("mx_hosts".to_string(), json!(&mx_hosts)),
                 ("signals".to_string(), json!(signals)),
             ],
         ));
@@ -760,6 +796,49 @@ fn dedupe_signals(signals: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+fn infer_mail_provider(mx_hosts: &[String], apex: &str) -> Option<String> {
+    let providers: [(&str, &[&str]); 11] = [
+        (
+            "google-workspace",
+            &["aspmx.l.google.com", ".google.com", ".googlemail.com"],
+        ),
+        (
+            "microsoft-365",
+            &[".mail.protection.outlook.com", ".outlook.com"],
+        ),
+        ("zoho-mail", &[".zoho.com", ".zohomail.com"]),
+        ("fastmail", &[".messagingengine.com"]),
+        ("mimecast", &[".mimecast.com"]),
+        ("proofpoint", &[".pphosted.com"]),
+        ("mailgun", &[".mailgun.org"]),
+        ("sendgrid", &[".sendgrid.net"]),
+        ("proton-mail", &[".protonmail.ch", ".protonmail.com"]),
+        ("icloud-mail", &[".icloud.com", ".me.com"]),
+        ("amazon-ses", &[".amazonses.com", ".awsapps.com"]),
+    ];
+
+    for host in mx_hosts {
+        let candidate = canonical_host(host);
+        for (provider, markers) in providers {
+            if markers
+                .iter()
+                .any(|marker| candidate == *marker || candidate.ends_with(marker))
+            {
+                return Some(provider.to_string());
+            }
+        }
+    }
+
+    if mx_hosts
+        .iter()
+        .any(|host| is_same_domain_or_subdomain(host, apex))
+    {
+        return Some("custom-self-hosted".to_string());
+    }
+
+    mx_hosts.first().cloned()
+}
+
 /// Determine whether a hostname looks like the same domain family as the apex.
 fn is_same_domain_or_subdomain(candidate: &str, apex: &str) -> bool {
     let candidate = canonical_host(candidate);
@@ -770,6 +849,8 @@ fn is_same_domain_or_subdomain(candidate: &str, apex: &str) -> bool {
 /// Container for a fetched surface snapshot.
 #[derive(Debug, Default)]
 struct SurfaceObservation {
+    scheme: String,
+    status_code: Option<u16>,
     headers_text: String,
     body: Option<String>,
     robots: Option<String>,
@@ -780,12 +861,23 @@ struct SurfaceObservation {
     x_powered_by: Option<String>,
 }
 
+impl SurfaceObservation {
+    fn has_body(&self) -> bool {
+        self.body
+            .as_deref()
+            .map(|body| !body.trim().is_empty())
+            .unwrap_or(false)
+    }
+}
+
 /// Fetch a small passive snapshot of a host.
 fn fetch_surface(host: &str) -> Result<SurfaceObservation> {
     let scheme = resolve_reachable_scheme(host).unwrap_or("https");
     let mut surface = SurfaceObservation::default();
+    surface.scheme = scheme.to_string();
 
     let root_headers = fetch_headers(host, scheme, "/")?;
+    surface.status_code = root_headers.status_code;
     surface.headers_text = root_headers.raw.clone();
     surface.content_type = root_headers.headers.get("content-type").cloned();
     surface.server_banner = root_headers.headers.get("server").cloned();
@@ -813,6 +905,7 @@ fn resolve_reachable_scheme(host: &str) -> Option<&'static str> {
 #[derive(Debug, Default)]
 struct HeaderFetch {
     raw: String,
+    status_code: Option<u16>,
     headers: BTreeMap<String, String>,
 }
 
@@ -825,6 +918,7 @@ fn fetch_headers(host: &str, scheme: &str, path: &str) -> Result<HeaderFetch> {
         .arg("8")
         .arg("--connect-timeout")
         .arg("3")
+        .arg("--insecure")
         .arg(url)
         .output()
         .with_context(|| format!("failed to fetch headers for {host}{path}"))?;
@@ -834,8 +928,13 @@ fn fetch_headers(host: &str, scheme: &str, path: &str) -> Result<HeaderFetch> {
     }
 
     let raw = String::from_utf8_lossy(&output.stdout).to_string();
+    let status_code = parse_status_code(&raw);
     let headers = parse_headers(&raw);
-    Ok(HeaderFetch { raw, headers })
+    Ok(HeaderFetch {
+        raw,
+        status_code,
+        headers,
+    })
 }
 
 /// Fetch response body for a path.
@@ -847,6 +946,7 @@ fn fetch_body(host: &str, scheme: &str, path: &str) -> Result<Option<String>> {
         .arg("8")
         .arg("--connect-timeout")
         .arg("3")
+        .arg("--insecure")
         .arg(url)
         .output()
         .with_context(|| format!("failed to fetch body for {host}{path}"))?;
@@ -872,6 +972,126 @@ fn parse_headers(raw: &str) -> BTreeMap<String, String> {
         }
     }
     headers
+}
+
+fn parse_status_code(raw: &str) -> Option<u16> {
+    raw.lines().rev().find_map(|line| {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("HTTP/") {
+            return None;
+        }
+        trimmed
+            .split_whitespace()
+            .nth(1)
+            .and_then(|value| value.parse::<u16>().ok())
+    })
+}
+
+fn detect_surface_failure(surface: &SurfaceObservation) -> Option<String> {
+    let body = surface.body.as_deref().unwrap_or("");
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return Some("zombie site: blank root response body".to_string());
+    }
+
+    if let Some(status_code) = surface.status_code {
+        if matches!(
+            status_code,
+            500 | 502 | 503 | 504 | 521 | 522 | 523 | 524 | 525 | 526 | 530
+        ) {
+            return Some(format!("zombie site: upstream returned HTTP {status_code}"));
+        }
+    }
+
+    let lower = trimmed.to_lowercase();
+    let proxy_markers = [
+        "bad gateway",
+        "proxy error",
+        "reverse proxy error",
+        "origin is unreachable",
+        "web server is returning an unknown error",
+        "error code: 502",
+        "error code: 503",
+        "error code: 521",
+        "error code: 522",
+        "error code: 523",
+        "error code: 524",
+        "error code: 525",
+        "error code: 526",
+        "upstream connect error",
+        "backend fetch failed",
+        "no healthy upstream",
+    ];
+    if proxy_markers.iter().any(|marker| lower.contains(marker)) {
+        return Some("zombie site: reverse proxy or upstream error page".to_string());
+    }
+
+    let content_type = surface.content_type.as_deref().unwrap_or("");
+    let looks_html = content_type.to_lowercase().contains("html") || lower.contains("<html");
+    if looks_html && !looks_like_website_body(body, content_type) {
+        return Some("zombie site: HTML shell without real page content".to_string());
+    }
+
+    None
+}
+
+fn surface_is_psi_eligible(surface: &SurfaceObservation) -> bool {
+    looks_like_website_body(
+        surface.body.as_deref().unwrap_or(""),
+        surface.content_type.as_deref().unwrap_or(""),
+    )
+}
+
+fn looks_like_website_body(body: &str, content_type: &str) -> bool {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let lower = trimmed.to_lowercase();
+    let htmlish_markers = ["<!doctype html", "<html", "<head", "<body"];
+    let content_markers = [
+        "<title",
+        "<meta",
+        "<main",
+        "<section",
+        "<article",
+        "<div",
+        "<script",
+        "<link",
+        "<img",
+        "<h1",
+        "id=\"app\"",
+        "id='app'",
+        "id=\"root\"",
+        "id='root'",
+    ];
+    let htmlish = content_type.to_lowercase().contains("html")
+        || htmlish_markers.iter().any(|marker| lower.contains(marker))
+        || content_markers.iter().any(|marker| lower.contains(marker));
+    if !htmlish {
+        return false;
+    }
+
+    if content_markers.iter().any(|marker| lower.contains(marker)) {
+        return true;
+    }
+
+    visible_text_len(trimmed) >= 20
+}
+
+fn visible_text_len(value: &str) -> usize {
+    let mut len = 0;
+    let mut inside_tag = false;
+    for ch in value.chars() {
+        match ch {
+            '<' => inside_tag = true,
+            '>' => inside_tag = false,
+            _ if !inside_tag && ch.is_alphanumeric() => len += 1,
+            _ => {}
+        }
+    }
+    len
 }
 
 /// Convert a detected URL-like token into a host candidate.
@@ -1314,5 +1534,50 @@ fn canonical_value(record_type: &str, value: String) -> String {
     match record_type.to_uppercase().as_str() {
         "CNAME" => canonical_host(&value),
         _ => value,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        SurfaceObservation, detect_surface_failure, infer_mail_provider, looks_like_website_body,
+        surface_is_psi_eligible,
+    };
+
+    #[test]
+    fn detects_google_workspace_mx_provider() {
+        let provider = infer_mail_provider(&["aspmx.l.google.com".to_string()], "example.com");
+        assert_eq!(provider.as_deref(), Some("google-workspace"));
+    }
+
+    #[test]
+    fn marks_blank_html_shell_as_zombie() {
+        let surface = SurfaceObservation {
+            scheme: "https".to_string(),
+            status_code: Some(200),
+            content_type: Some("text/html".to_string()),
+            body: Some("<html><body></body></html>".to_string()),
+            ..SurfaceObservation::default()
+        };
+
+        assert_eq!(
+            detect_surface_failure(&surface).as_deref(),
+            Some("zombie site: HTML shell without real page content")
+        );
+        assert!(!surface_is_psi_eligible(&surface));
+    }
+
+    #[test]
+    fn html_app_shell_is_psi_eligible() {
+        let body = "<!doctype html><html><head><title>Site</title></head><body><div id=\"root\"></div><script src=\"/app.js\"></script></body></html>";
+        assert!(looks_like_website_body(body, "text/html; charset=utf-8"));
+    }
+
+    #[test]
+    fn json_api_body_is_not_psi_eligible() {
+        assert!(!looks_like_website_body(
+            "{\"status\":\"ok\"}",
+            "application/json"
+        ));
     }
 }

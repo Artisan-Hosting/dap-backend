@@ -42,11 +42,8 @@ except ImportError as exc:
         "notes": f"Missing dependency: {exc}",
     }))
 
-# Allow reusing helper located under tmp/psi_client.py
 ROOT = Path(__file__).resolve().parents[3]
-TMP_DIR = ROOT / "tmp"
-if TMP_DIR.exists():
-    sys.path.append(str(TMP_DIR))
+TMP_DIR = Path(tempfile.gettempdir()) / "artisan_dap" / "psi"
 
 try:
     from psi_client import credentials_available, fetch_psi_metrics  # type: ignore
@@ -98,8 +95,8 @@ def _validate_service_account_json(data: Dict[str, Any]) -> bool:
 
 
 def _write_json_credentials_to_temp(data: Dict[str, Any]) -> Path:
-    # Prefer project tmp dir if available; fall back to system temp
-    base_dir = TMP_DIR if TMP_DIR.exists() else Path(tempfile.gettempdir())
+    # Keep transient credentials outside the repo so the workspace stays clean.
+    base_dir = TMP_DIR
     base_dir.mkdir(parents=True, exist_ok=True)
 
     # Create securely; NamedTemporaryFile with delete=False so we can pass path

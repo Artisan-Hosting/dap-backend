@@ -11,8 +11,16 @@ rules:
     run:
       - web_hsts
       - web_security_headers
-      - psi_web_performance
       - web_mixed_content
+  - name: psi eligible web services
+    when:
+      entity: web_service
+      attr_equals:
+        scheme: https
+        alive: "true"
+        psi_eligible: "true"
+    run:
+      - psi_web_performance
   - name: mail service profile
     when:
       entity: service_profile
@@ -20,6 +28,7 @@ rules:
         role: mail
     run:
       - dns_dmarc_policy
+      - mail_server_probe
   - name: cname resolution chain
     when:
       entity: dns_record
@@ -35,6 +44,7 @@ rules:
         provider: wordpress
     run:
       - wp_touchpoints
+      - web_seo_basics
   - name: basic site profile
     when:
       entity: site_profile
@@ -42,6 +52,7 @@ rules:
         kind: basic
     run:
       - web_basic_surface
+      - web_seo_basics
   - name: ip observations
     when:
       entity: ip_address

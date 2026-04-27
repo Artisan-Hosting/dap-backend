@@ -1,17 +1,16 @@
-# Artisan Dynamic Auditing Platform (Prototype)
+# Artisan Dynamic Auditing Platform Backend
 
-This repository now includes a heavily-commented Rust prototype that mirrors the
-system breakdown in `objective.md` and `outline.md`. The goal is to give new
-contributors a runnable starting point while keeping the passive-first posture
-emphasized throughout the documentation.
+This repository is now a Rust backend service for the web application described
+in `backend_v1.md`.
 
 ## Layout
 
-- `src/` — Rust core (config loader, recursive passive discovery, planner, orchestrator, runner).
-- `config.toml` — Example run configuration used by the CLI.
+- `src/backend/` — Axum API server, capability registry, MySQL store, and worker loop.
+- `src/` — Shared engine pieces used by the backend (discovery, planner, plugins, runner).
+- `backend.toml` — Backend service configuration.
 - `rules.yaml` — Declarative planner rules mapping facts to tests.
 - `plugins/` — Hot-swappable plugin stubs with manifests and Python entrypoints.
-- `report.draft.json` — Modular JSON report sketch for the aggregator/reporting layer.
+- `docs/backend_v1/` — documented API, schema, report, and backend contract choices.
 
 ### Implemented Prototype Tests
 
@@ -19,18 +18,16 @@ emphasized throughout the documentation.
 - `web_mixed_content` — Counts absolute `http://` references on the root document to highlight mixed content debt (objective.md §7).
 - `web_hsts` — Confirms HTTPS reachability, HSTS configuration, and certificate runway.
 - `web_security_headers` — Inventories CSP/X-CTO/Referrer-Policy/etc. on the root document.
+- `web_seo_basics` — Checks title/meta/canonical/robots/sitemap hygiene plus exposed default files.
 - `web_basic_surface` — Flags frontend dev leaks and server signature/version exposure on basic sites.
-- `dns_dmarc_policy` — Parses DMARC/SPF/TLS-RPT TXT records for email posture.
+- `dns_dmarc_policy` — Parses DMARC/SPF/DKIM/TLS-RPT/MTA-STS/BIMI plus MTA-STS policy details for email posture.
+- `mail_server_probe` — Lightly probes public SMTP listener ports and EHLO capabilities on MX hosts.
 - `ip_reputation_dnsbl` — Checks resolved IPv4s against common DNS block lists.
 - `ip_hosting_provider` — Identifies common cloud/CDN providers such as Cloudflare, AWS, GCP, or Azure.
 - `ip_geolocation` — Captures city/region/country for resolved IPs and warns when they geolocate outside the US.
 - `psi_web_performance` — Calls Google's PSI API when credentials are provided via `PAGESPEED_API_KEY` or `PAGESPEED_CREDENTIALS_FILE`/`GOOGLE_APPLICATION_CREDENTIALS` (service account JSON).
 
-Discovery also emits `site_profiles.json` so the sweep can summarize CMS/API/mail hints before the planner chooses tests.
-The HTML bundle is written to `report/index.html` with one page per active host and a separate `report/dead.html` page.
-
-Every module includes inline comments explaining the intent and future work so
-frequent contributors can iterate without guesswork.
+Discovery persists site profiles, dead hosts, planned tests, results, and a canonical `report.json` for each run.
 
 ## Getting Started
 
@@ -39,29 +36,44 @@ frequent contributors can iterate without guesswork.
 cargo fmt
 cargo check
 
-# Execute a dry run (uses stub discovery + placeholder plugins)
-cargo run -- --config config.toml --rules rules.yaml --plugins plugins
-# Result artifacts land under /tmp/a-dap/runs/<domain>/<uuid>/results/*.json
-# Stdout/stderr logs land under /tmp/a-dap/runs/<domain>/<uuid>/logs/*
-# Discovery profile summaries land under /tmp/a-dap/runs/<domain>/<uuid>/results/site_profiles.json
+# Create the MySQL database and update backend.toml first
+# Example: mysql -uroot -p -e 'CREATE DATABASE artisan_dap;'
+
+# Start the backend server
+cargo run
+
+# Optional: point the server at a different config file
+ARTISAN_DAP_BACKEND_CONFIG=backend.toml cargo run
+```
+
+Default bind: `127.0.0.1:3000`
+
+Example endpoints:
+
+```bash
+curl http://127.0.0.1:3000/v1/tests
+
+curl -X POST http://127.0.0.1:3000/v1/runs \
+  -H 'content-type: application/json' \
+  -d '{"target":"artisanhosting.net","requested_tests":["dns_dmarc_policy"]}'
 ```
 
 ### Python Plugin Dependencies
 
-On startup the orchestrator provisions an isolated venv under `/tmp/a-dap/venvs/<uuid>/` (via `python3 -m venv`) and installs `httpx`, `beautifulsoup4`, and `dnspython`. Ensure the host has outbound access to PyPI the first time you run the tool. Export `PAGESPEED_API_KEY` to enable the PSI test.
+On first startup the backend provisions a shared venv under `venvs/shared/` and installs `httpx`, `beautifulsoup4`, `dnspython`, `google-auth`, and `requests`. Ensure the host has outbound access to PyPI the first time you start the server. Export `PAGESPEED_API_KEY` or a PSI credentials env/file to expose `psi_web_performance` through `GET /v1/tests`.
 
-At this stage the orchestrator will:
+At this stage the backend will:
 
-1. Load `config.toml`.
-2. Perform recursive passive discovery (DNS, CT, robots, sitemap, root content) and emit site profiles.
-3. Plan tests using `rules.yaml`.
-4. Invoke the runner, which now captures stdout/stderr and applies manifest timeouts/env vars.
+1. Load `backend.toml`.
+2. Expose only currently supported tests through `GET /v1/tests`.
+3. Persist submitted runs in MySQL.
+4. Execute queued runs in an embedded worker loop.
+5. Persist discovery facts, planned tests, results, artifacts, and canonical `report.json` output.
 
-## Next Steps
+## Contracts
 
-- Add more CMS/provider fingerprints and a mail-specific test catalog.
-- Expand the planner DSL to cover pattern matching and richer conditions.
-- Expand the report renderer around the JSON draft in `report.draft.json`.
+- Backend v1 draft: `backend_v1.md`
+- API/storage/report docs: `docs/backend_v1/`
+- OpenAPI spec: `docs/openapi.yaml`
 
-Contributors are encouraged to keep comments/docstrings verbose in line with
-`human_needs.md` so the codebase remains easy to hand off.
+The backend binary is server-only now. Audit execution happens through the HTTP API and embedded worker loop rather than through a CLI run command.

@@ -1,0 +1,15 @@
+# Light external probe for public mail listener posture.
+id: mail_server_probe
+name: Mail transport surface probe
+version: 0.1.0
+entrypoint: run.py
+runtime: python
+triggers:
+  any:
+    - entity: service_profile
+      where:
+        role: mail
+limits:
+  timeout_seconds: 45
+  memory_mb: 128
+env: []

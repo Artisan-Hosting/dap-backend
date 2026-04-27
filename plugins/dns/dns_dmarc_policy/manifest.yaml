@@ -1,8 +1,8 @@
-# DNS DMARC plugin manifest. The trigger matches TXT records so the runner can
-# evaluate DMARC posture passively.
+# DNS email posture manifest. The trigger matches TXT records so the runner can
+# evaluate mail authentication posture passively.
 id: dns_dmarc_policy
-name: DMARC policy observation
-version: 0.1.0
+name: Email authentication posture
+version: 0.2.0
 entrypoint: run.py
 runtime: python
 triggers:
