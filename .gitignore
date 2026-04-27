@@ -2,3 +2,8 @@
 runs/
 .dap_env/
 tmp/
+artifacts/
+venvs/
+results/
+report/
+.gsa
