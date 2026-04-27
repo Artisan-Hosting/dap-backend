@@ -1,0 +1,16 @@
+# DNS DMARC plugin manifest. The trigger matches TXT records so the runner can
+# evaluate DMARC posture passively.
+id: dns_dmarc_policy
+name: DMARC policy observation
+version: 0.1.0
+entrypoint: run.py
+runtime: python
+triggers:
+  any:
+    - entity: dns_record
+      where:
+        type: TXT
+limits:
+  timeout_seconds: 20
+  memory_mb: 64
+env: []

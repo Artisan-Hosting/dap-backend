@@ -1,0 +1,8 @@
+{
+  "exit_code": 0,
+  "status": "error",
+  "stderr_non_empty": false,
+  "target": "mail.artisanhosting.net",
+  "test_id": "web_hsts",
+  "timed_out": false
+}

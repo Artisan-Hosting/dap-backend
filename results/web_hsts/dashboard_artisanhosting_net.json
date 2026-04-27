@@ -1,0 +1,17 @@
+{
+  "test_id": "web_hsts",
+  "target": "dashboard.artisanhosting.net",
+  "status": "fail",
+  "severity": "high",
+  "evidence": {
+    "cert_days_left": 71,
+    "hsts_header": null,
+    "http_redirects_to_https": true,
+    "https_status": 502
+  },
+  "recommendations": [
+    "Serve the site over HTTPS",
+    "Install a valid TLS certificate"
+  ],
+  "notes": null
+}

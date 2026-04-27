@@ -1,0 +1,1 @@
+{"test_id": "dns_cname_chain", "target": "headscale.artisanhosting.net", "status": "pass", "severity": "informational", "evidence": {"chain": [], "terminal": "headscale.artisanhosting.net", "addresses": ["148.59.133.47"], "depth": 0}, "recommendations": [], "notes": null}

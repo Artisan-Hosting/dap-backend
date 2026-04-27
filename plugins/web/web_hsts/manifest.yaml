@@ -1,0 +1,16 @@
+# Manifest describing the HSTS plugin. Heavy inline comments are included to
+# help future contributors understand how the orchestrator interprets each key.
+id: web_hsts
+name: HTTP Strict Transport Security audit
+version: 0.1.0
+entrypoint: run.py
+runtime: python
+triggers:
+  any:
+    - entity: web_service
+      where:
+        scheme: https
+limits:
+  timeout_seconds: 20
+  memory_mb: 128
+env: []

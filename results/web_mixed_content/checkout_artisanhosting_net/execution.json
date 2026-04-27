@@ -1,0 +1,8 @@
+{
+  "exit_code": 0,
+  "status": "pass",
+  "stderr_non_empty": false,
+  "target": "checkout.artisanhosting.net",
+  "test_id": "web_mixed_content",
+  "timed_out": false
+}

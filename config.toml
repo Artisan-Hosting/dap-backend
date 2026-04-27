@@ -1,0 +1,36 @@
+# Example run configuration consumed by the Rust orchestrator. Adjust the scope
+# and credentials, then launch a run via:
+#   cargo run -- --config config.toml
+
+# Primary domain we manage in this workspace.
+domain = "beckerdesign.net"
+
+# Allow-list wildcard patterns that discovery should include when sweeping.
+include = ["*.artisanhosting.net"]
+# Block-list patterns to skip during discovery.
+exclude = []
+
+[scope]
+# Choose between "domain_sweep" (discover multiple hosts) or "single_site".
+#mode = "domain_sweep"
+mode = "single_site"
+# Uncomment and populate when mode = "single_site" to lock tests to one host.
+#site = "www.artisanhosting.net"
+site = "www.beckerdesign.net"
+
+[psi]
+# Enable PageSpeed Insights collection when credentials and quotas are ready.
+enabled = false
+strategies = ["mobile", "desktop"]
+categories = ["performance", "accessibility", "best-practices", "seo"]
+timeout_seconds = 120
+# Set alongside or instead of PAGESPEED_API_KEY when using a service account.
+#credentials_file = "/home/dwhitfield/Developer/Artisan_Hosting/Tools/artisan_dap/tmp/psi.json"
+
+[execution]
+max_workers = 4
+per_host_concurrency = 2
+
+[report]
+formats = ["json", "html"]
+css = "report/assets/custom.css"

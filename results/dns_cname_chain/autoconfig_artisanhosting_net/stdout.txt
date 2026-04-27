@@ -1,0 +1,1 @@
+{"test_id": "dns_cname_chain", "target": "autoconfig.artisanhosting.net", "status": "pass", "severity": "informational", "evidence": {"chain": [{"from": "autoconfig.artisanhosting.net", "to": "mail.artisanhosting.net"}], "terminal": "mail.artisanhosting.net", "addresses": ["185.187.235.4", "148.59.133.47"], "depth": 1}, "recommendations": [], "notes": null}

@@ -1,0 +1,8 @@
+{
+  "exit_code": 0,
+  "status": "pass",
+  "stderr_non_empty": false,
+  "target": "artisanhosting.net",
+  "test_id": "dns_dmarc_policy",
+  "timed_out": false
+}

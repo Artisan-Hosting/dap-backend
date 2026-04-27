@@ -1,0 +1,22 @@
+{
+  "test_id": "dns_cname_chain",
+  "target": "www.artisanhosting.net",
+  "status": "pass",
+  "severity": "informational",
+  "evidence": {
+    "addresses": [
+      "148.59.133.47",
+      "192.53.121.214"
+    ],
+    "chain": [
+      {
+        "from": "www.artisanhosting.net",
+        "to": "artisanhosting.net"
+      }
+    ],
+    "depth": 1,
+    "terminal": "artisanhosting.net"
+  },
+  "recommendations": [],
+  "notes": null
+}

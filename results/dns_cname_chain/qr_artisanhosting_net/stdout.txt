@@ -1,0 +1,1 @@
+{"test_id": "dns_cname_chain", "target": "qr.artisanhosting.net", "status": "pass", "severity": "informational", "evidence": {"chain": [{"from": "qr.artisanhosting.net", "to": "artisanhosting.net"}], "terminal": "artisanhosting.net", "addresses": ["148.59.133.47", "192.53.121.214"], "depth": 1}, "recommendations": [], "notes": null}

@@ -1,0 +1,40 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>office.artisanhosting.net</title><link rel="stylesheet" href="../assets/report.css"></head><body><div class="wrap"><div class="hero"><div><h1>office.artisanhosting.net</h1><p>Subdomain page</p></div><div class="chips"><span class="badge">HTML bundle</span><span class="badge">JSON source</span></div></div><div class="grid cols-4"><div class="stat"><span class="k">Tests</span><span class="v">5</span></div><div class="stat"><span class="k">Pass</span><span class="v">1</span></div><div class="stat"><span class="k">Warn</span><span class="v">3</span></div><div class="stat"><span class="k">Error</span><span class="v">0</span></div></div><div class="panel section"><h2>Tests</h2><div class="card-list"><div class="card"><h4>dns_cname_chain</h4><div class="chips"><span class="chip pass">pass</span><span class="chip">severity: informational</span><span class="chip">target: office.artisanhosting.net</span></div><details><summary>Evidence</summary><pre>{
+  &quot;addresses&quot;: [
+    &quot;148.59.133.47&quot;,
+    &quot;192.53.121.214&quot;
+  ],
+  &quot;chain&quot;: [
+    {
+      &quot;from&quot;: &quot;office.artisanhosting.net&quot;,
+      &quot;to&quot;: &quot;artisanhosting.net&quot;
+    }
+  ],
+  &quot;depth&quot;: 1,
+  &quot;terminal&quot;: &quot;artisanhosting.net&quot;
+}</pre></details></div><div class="card"><h4>psi_web_performance</h4><div class="chips"><span class="chip skipped">skipped</span><span class="chip">severity: informational</span><span class="chip">target: https://office.artisanhosting.net/</span></div><details><summary>Recommendations</summary><pre>Provide a PageSpeed API key or service account credentials to enable PSI audits</pre></details><details><summary>Evidence</summary><pre>{
+  &quot;credential_mode&quot;: &quot;none&quot;,
+  &quot;note&quot;: &quot;Set PAGESPEED_API_KEY or provide service account credentials via PAGESPEED_CREDENTIALS_FILE/GOOGLE_APPLICATION_CREDENTIALS or config (psi_credentials_file / psi_credentials_json / psi_credentials_b64).&quot;,
+  &quot;resolved_credentials_file&quot;: null
+}</pre></details></div><div class="card"><h4>web_hsts</h4><div class="chips"><span class="chip warn">warn</span><span class="chip">severity: medium</span><span class="chip">target: office.artisanhosting.net</span></div><details><summary>Recommendations</summary><pre>Enable Strict-Transport-Security on HTTPS responses</pre></details><details><summary>Evidence</summary><pre>{
+  &quot;cert_days_left&quot;: 47,
+  &quot;hsts_header&quot;: null,
+  &quot;http_redirects_to_https&quot;: true,
+  &quot;https_status&quot;: 200
+}</pre></details></div><div class="card"><h4>web_mixed_content</h4><div class="chips"><span class="chip warn">warn</span><span class="chip">severity: low</span><span class="chip">target: office.artisanhosting.net</span></div><details><summary>Recommendations</summary><pre>Replace hardcoded http:// assets with HTTPS equivalents</pre></details><details><summary>Evidence</summary><pre>{
+  &quot;hosts&quot;: [
+    &quot;www.apache.org&quot;,
+    &quot;www.w3.org&quot;
+  ],
+  &quot;http_reference_count&quot;: 2
+}</pre></details></div><div class="card"><h4>web_security_headers</h4><div class="chips"><span class="chip warn">warn</span><span class="chip">severity: medium</span><span class="chip">target: office.artisanhosting.net</span></div><details><summary>Recommendations</summary><pre>Add defensive headers: referrer-policy
+Set Strict-Transport-Security on HTTPS responses</pre></details><details><summary>Evidence</summary><pre>{
+  &quot;coep_present&quot;: null,
+  &quot;coop_present&quot;: null,
+  &quot;corp_present&quot;: null,
+  &quot;csp_present&quot;: &quot;frame-ancestors &#39;self&#39; https://cloud.artisanhosting.net&quot;,
+  &quot;hsts_present&quot;: null,
+  &quot;permpol_present&quot;: null,
+  &quot;refpol_present&quot;: null,
+  &quot;xcto_present&quot;: &quot;nosniff&quot;,
+  &quot;xfo_present&quot;: &quot;DENY&quot;
+}</pre></details></div></div></div><div class="footer-links"><a href="../index.html">Back to index</a><a href="../dead.html">Dead hosts</a></div></div></body></html>

@@ -1,0 +1,13 @@
+# Hosting provider and proxy identification.
+id: ip_hosting_provider
+name: IP hosting provider profile
+version: 0.1.0
+entrypoint: run.py
+runtime: python
+triggers:
+  any:
+    - entity: ip_address
+limits:
+  timeout_seconds: 15
+  memory_mb: 96
+env: []

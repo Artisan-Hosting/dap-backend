@@ -1,0 +1,8 @@
+{
+  "exit_code": 0,
+  "status": "skipped",
+  "stderr_non_empty": false,
+  "target": "https://t2.artisanhosting.net/",
+  "test_id": "psi_web_performance",
+  "timed_out": false
+}

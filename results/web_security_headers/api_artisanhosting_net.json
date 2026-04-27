@@ -1,0 +1,22 @@
+{
+  "test_id": "web_security_headers",
+  "target": "api.artisanhosting.net",
+  "status": "warn",
+  "severity": "medium",
+  "evidence": {
+    "coep_present": null,
+    "coop_present": null,
+    "corp_present": null,
+    "csp_present": null,
+    "hsts_present": null,
+    "permpol_present": null,
+    "refpol_present": null,
+    "xcto_present": "nosniff",
+    "xfo_present": "DENY"
+  },
+  "recommendations": [
+    "Add defensive headers: content-security-policy, referrer-policy",
+    "Set Strict-Transport-Security on HTTPS responses"
+  ],
+  "notes": null
+}

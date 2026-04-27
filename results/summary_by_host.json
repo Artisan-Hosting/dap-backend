@@ -1,0 +1,693 @@
+{
+  "dns_cname_chain": [
+    {
+      "target": "api.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "autoconfig.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "autodiscover.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "beta.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "blog.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "checkout.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "cloud.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "dashboard.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "demo.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "docs.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "email.ms.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "headscale.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "links.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "office.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "plausible.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "The resolution lifetime expired after 5.001 seconds: Server Do53:192.168.0.1@53 answered The DNS operation timed out.; Server Do53:1.1.1.1@53 answered The DNS operation timed out.; Server Do53:192.168.0.1@53 answered The DNS operation timed out."
+    },
+    {
+      "target": "postiz.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "qr.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "relay.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "services.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "staging.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "stats.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "t2.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "uptime.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "www.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    }
+  ],
+  "dns_dmarc_policy": [
+    {
+      "target": "artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    }
+  ],
+  "psi_web_performance": [
+    {
+      "target": "https://api.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://autoconfig.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://autodiscover.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://beta.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://blog.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://checkout.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://cloud.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://dashboard.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://demo.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://docs.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://email.ms.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://headscale.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://links.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://mail.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://office.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://plausible.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://postiz.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://qr.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://relay.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://services.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://staging.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://stats.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://t2.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://uptime.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    },
+    {
+      "target": "https://www.artisanhosting.net/",
+      "status": "skipped",
+      "severity": "informational"
+    }
+  ],
+  "web_hsts": [
+    {
+      "target": "api.artisanhosting.net",
+      "status": "warn",
+      "severity": "medium"
+    },
+    {
+      "target": "artisanhosting.net",
+      "status": "warn",
+      "severity": "medium"
+    },
+    {
+      "target": "autoconfig.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "HSTS check failed"
+    },
+    {
+      "target": "autodiscover.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "HSTS check failed"
+    },
+    {
+      "target": "beta.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "plugin timed out after 20s"
+    },
+    {
+      "target": "blog.artisanhosting.net",
+      "status": "warn",
+      "severity": "medium"
+    },
+    {
+      "target": "checkout.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "cloud.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "plugin timed out after 20s"
+    },
+    {
+      "target": "dashboard.artisanhosting.net",
+      "status": "fail",
+      "severity": "high"
+    },
+    {
+      "target": "demo.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "plugin timed out after 20s"
+    },
+    {
+      "target": "docs.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "HSTS check failed"
+    },
+    {
+      "target": "email.ms.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "HSTS check failed"
+    },
+    {
+      "target": "headscale.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "plugin timed out after 20s"
+    },
+    {
+      "target": "links.artisanhosting.net",
+      "status": "warn",
+      "severity": "medium"
+    },
+    {
+      "target": "mail.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "HSTS check failed"
+    },
+    {
+      "target": "office.artisanhosting.net",
+      "status": "warn",
+      "severity": "medium"
+    },
+    {
+      "target": "plausible.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "postiz.artisanhosting.net",
+      "status": "warn",
+      "severity": "medium"
+    },
+    {
+      "target": "qr.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "HSTS check failed"
+    },
+    {
+      "target": "relay.artisanhosting.net",
+      "status": "warn",
+      "severity": "medium"
+    },
+    {
+      "target": "services.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "plugin timed out after 20s"
+    },
+    {
+      "target": "staging.artisanhosting.net",
+      "status": "warn",
+      "severity": "medium"
+    },
+    {
+      "target": "stats.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "HSTS check failed"
+    },
+    {
+      "target": "t2.artisanhosting.net",
+      "status": "warn",
+      "severity": "medium"
+    },
+    {
+      "target": "uptime.artisanhosting.net",
+      "status": "warn",
+      "severity": "medium"
+    },
+    {
+      "target": "www.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "plugin timed out after 20s"
+    }
+  ],
+  "web_mixed_content": [
+    {
+      "target": "api.artisanhosting.net",
+      "status": "warn",
+      "severity": "low"
+    },
+    {
+      "target": "artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "autoconfig.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "plugin timed out after 20s"
+    },
+    {
+      "target": "autodiscover.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "Mixed content scan failed"
+    },
+    {
+      "target": "beta.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "plugin timed out after 20s"
+    },
+    {
+      "target": "blog.artisanhosting.net",
+      "status": "warn",
+      "severity": "low"
+    },
+    {
+      "target": "checkout.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "cloud.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "dashboard.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "demo.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "docs.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "plugin timed out after 20s"
+    },
+    {
+      "target": "email.ms.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "Mixed content scan failed"
+    },
+    {
+      "target": "headscale.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "links.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "mail.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "Mixed content scan failed"
+    },
+    {
+      "target": "office.artisanhosting.net",
+      "status": "warn",
+      "severity": "low"
+    },
+    {
+      "target": "plausible.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "postiz.artisanhosting.net",
+      "status": "warn",
+      "severity": "low"
+    },
+    {
+      "target": "qr.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "Mixed content scan failed"
+    },
+    {
+      "target": "relay.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "services.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "plugin timed out after 20s"
+    },
+    {
+      "target": "staging.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "stats.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "Mixed content scan failed"
+    },
+    {
+      "target": "t2.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "uptime.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "plugin timed out after 20s"
+    },
+    {
+      "target": "www.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    }
+  ],
+  "web_security_headers": [
+    {
+      "target": "api.artisanhosting.net",
+      "status": "warn",
+      "severity": "medium"
+    },
+    {
+      "target": "artisanhosting.net",
+      "status": "warn",
+      "severity": "medium"
+    },
+    {
+      "target": "autoconfig.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "Security header fetch failed"
+    },
+    {
+      "target": "autodiscover.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "Security header fetch failed"
+    },
+    {
+      "target": "beta.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "plugin timed out after 20s"
+    },
+    {
+      "target": "blog.artisanhosting.net",
+      "status": "warn",
+      "severity": "medium"
+    },
+    {
+      "target": "checkout.artisanhosting.net",
+      "status": "warn",
+      "severity": "medium"
+    },
+    {
+      "target": "cloud.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "dashboard.artisanhosting.net",
+      "status": "warn",
+      "severity": "medium"
+    },
+    {
+      "target": "demo.artisanhosting.net",
+      "status": "warn",
+      "severity": "medium"
+    },
+    {
+      "target": "docs.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "Security header fetch failed"
+    },
+    {
+      "target": "email.ms.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "Security header fetch failed"
+    },
+    {
+      "target": "headscale.artisanhosting.net",
+      "status": "warn",
+      "severity": "medium"
+    },
+    {
+      "target": "links.artisanhosting.net",
+      "status": "warn",
+      "severity": "medium"
+    },
+    {
+      "target": "mail.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "Security header fetch failed"
+    },
+    {
+      "target": "office.artisanhosting.net",
+      "status": "warn",
+      "severity": "medium"
+    },
+    {
+      "target": "plausible.artisanhosting.net",
+      "status": "pass",
+      "severity": "informational"
+    },
+    {
+      "target": "postiz.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "plugin timed out after 20s"
+    },
+    {
+      "target": "qr.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "Security header fetch failed"
+    },
+    {
+      "target": "relay.artisanhosting.net",
+      "status": "warn",
+      "severity": "medium"
+    },
+    {
+      "target": "services.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "plugin timed out after 20s"
+    },
+    {
+      "target": "staging.artisanhosting.net",
+      "status": "warn",
+      "severity": "medium"
+    },
+    {
+      "target": "stats.artisanhosting.net",
+      "status": "error",
+      "severity": "informational",
+      "notes": "Security header fetch failed"
+    },
+    {
+      "target": "t2.artisanhosting.net",
+      "status": "warn",
+      "severity": "medium"
+    },
+    {
+      "target": "uptime.artisanhosting.net",
+      "status": "warn",
+      "severity": "medium"
+    },
+    {
+      "target": "www.artisanhosting.net",
+      "status": "warn",
+      "severity": "medium"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "test_id": "dns_cname_chain",
+  "target": "email.ms.artisanhosting.net",
+  "status": "pass",
+  "severity": "informational",
+  "evidence": {
+    "addresses": [
+      "34.102.239.211"
+    ],
+    "chain": [
+      {
+        "from": "email.ms.artisanhosting.net",
+        "to": "mailgun.org"
+      }
+    ],
+    "depth": 1,
+    "terminal": "mailgun.org"
+  },
+  "recommendations": [],
+  "notes": null
+}

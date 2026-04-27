@@ -1,0 +1,28 @@
+{
+  "test_id": "dns_cname_chain",
+  "target": "checkout.artisanhosting.net",
+  "status": "pass",
+  "severity": "informational",
+  "evidence": {
+    "addresses": [
+      "104.18.35.156",
+      "172.64.152.100",
+      "2606:4700:4405::ac40:9864",
+      "2a06:98c1:3103::6812:239c"
+    ],
+    "chain": [
+      {
+        "from": "checkout.artisanhosting.net",
+        "to": "hosted-checkout.stripecdn.com"
+      },
+      {
+        "from": "hosted-checkout.stripecdn.com",
+        "to": "hosted-checkout.stripecdn.com.cdn.cloudflare.net"
+      }
+    ],
+    "depth": 2,
+    "terminal": "hosted-checkout.stripecdn.com.cdn.cloudflare.net"
+  },
+  "recommendations": [],
+  "notes": null
+}

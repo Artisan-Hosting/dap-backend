@@ -1,0 +1,8 @@
+{
+  "exit_code": 0,
+  "status": "pass",
+  "stderr_non_empty": false,
+  "target": "t2.artisanhosting.net",
+  "test_id": "dns_cname_chain",
+  "timed_out": false
+}

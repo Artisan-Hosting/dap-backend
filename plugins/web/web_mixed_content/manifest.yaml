@@ -1,0 +1,16 @@
+# Mixed content audit mapped to objective.md §7. The plugin fetches the root
+# document and counts absolute http:// references to highlight insecure assets.
+id: web_mixed_content
+name: Mixed content reference counter
+version: 0.1.0
+entrypoint: run.py
+runtime: python
+triggers:
+  any:
+    - entity: web_service
+      where:
+        scheme: https
+limits:
+  timeout_seconds: 20
+  memory_mb: 128
+env: []

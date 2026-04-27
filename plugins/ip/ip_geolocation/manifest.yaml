@@ -1,0 +1,13 @@
+# Geolocation and distance sanity check for resolved IPs.
+id: ip_geolocation
+name: IP geolocation check
+version: 0.1.0
+entrypoint: run.py
+runtime: python
+triggers:
+  any:
+    - entity: ip_address
+limits:
+  timeout_seconds: 15
+  memory_mb: 96
+env: []

@@ -1,0 +1,1 @@
+{"test_id": "web_hsts", "target": "checkout.artisanhosting.net", "status": "pass", "severity": "informational", "evidence": {"https_status": 204, "hsts_header": "max-age=31556926; includeSubDomains; preload", "http_redirects_to_https": true, "cert_days_left": 78}, "recommendations": ["Confirm HSTS preload suitability (max-age >= 63072000)"], "notes": null}

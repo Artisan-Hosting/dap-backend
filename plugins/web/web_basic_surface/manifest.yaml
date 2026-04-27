@@ -1,0 +1,18 @@
+# Basic site surface audit.
+#
+# This test runs against sites that do not look like a CMS or API and checks
+# for common frontend-framework and server-signature exposures.
+id: web_basic_surface
+name: Basic web surface and frontend audit
+version: 0.1.0
+entrypoint: run.py
+runtime: python
+triggers:
+  any:
+    - entity: site_profile
+      where:
+        kind: basic
+limits:
+  timeout_seconds: 25
+  memory_mb: 128
+env: []

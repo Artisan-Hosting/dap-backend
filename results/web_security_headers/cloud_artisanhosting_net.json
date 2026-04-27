@@ -1,0 +1,19 @@
+{
+  "test_id": "web_security_headers",
+  "target": "cloud.artisanhosting.net",
+  "status": "pass",
+  "severity": "informational",
+  "evidence": {
+    "coep_present": null,
+    "coop_present": null,
+    "corp_present": null,
+    "csp_present": "default-src 'none';base-uri 'none';manifest-src 'self';script-src 'nonce-ofmyTe4kycwCvBCyGXF9cluSQcvfdB8pBWrYBMWQwVQ=';script-src-elem 'strict-dynamic' 'nonce-ofmyTe4kycwCvBCyGXF9cluSQcvfdB8pBWrYBMWQwVQ=';style-src 'self' 'unsafe-inline';img-src 'self' data: blob: * https://user-images.githubusercontent.com https://*.tile.openstreetmap.org;font-src 'self' data:;connect-src 'self';media-src 'self';frame-src prezi.com player.vimeo.com vine.co www.youtube.com 'self';frame-ancestors 'self';form-action 'self'",
+    "hsts_present": "max-age=31536000; includeSubDomains; preload",
+    "permpol_present": "interest-cohort=()",
+    "refpol_present": "same-origin, no-referrer",
+    "xcto_present": "nosniff, nosniff, nosniff",
+    "xfo_present": "SAMEORIGIN, DENY, SAMEORIGIN"
+  },
+  "recommendations": [],
+  "notes": null
+}

@@ -1,0 +1,1 @@
+This repo will be heavily shared an frequently edited. For any and all changes please provide documentation and heavy comments to make it easier for new devs to hop in and tweak components of this.

@@ -1,0 +1,1 @@
+{"test_id": "web_hsts", "target": "blog.artisanhosting.net", "status": "warn", "severity": "medium", "evidence": {"https_status": 200, "hsts_header": null, "http_redirects_to_https": true, "cert_days_left": 71}, "recommendations": ["Enable Strict-Transport-Security on HTTPS responses"], "notes": null}

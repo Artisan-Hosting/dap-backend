@@ -1,0 +1,16 @@
+# WordPress touchpoint audit derived from objective.md §6. This plugin inspects
+# wp-login.php, xmlrpc.php, and the REST API using GET-only requests.
+id: wp_touchpoints
+name: WordPress login & XML-RPC posture
+version: 0.1.0
+entrypoint: run.py
+runtime: python
+triggers:
+  any:
+    - entity: stack
+      where:
+        name: wordpress
+limits:
+  timeout_seconds: 30
+  memory_mb: 256
+env: []

@@ -1,0 +1,8 @@
+{
+  "exit_code": null,
+  "status": "error",
+  "stderr_non_empty": false,
+  "target": "postiz.artisanhosting.net",
+  "test_id": "web_security_headers",
+  "timed_out": true
+}

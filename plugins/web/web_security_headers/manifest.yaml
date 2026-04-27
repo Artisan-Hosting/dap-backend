@@ -1,0 +1,16 @@
+# Manifest describing the security header observation plugin. Update the
+# `where` clause if additional heuristics become necessary.
+id: web_security_headers
+name: Root document security header inventory
+version: 0.1.0
+entrypoint: run.py
+runtime: python
+triggers:
+  any:
+    - entity: web_service
+      where:
+        scheme: https
+limits:
+  timeout_seconds: 20
+  memory_mb: 128
+env: []

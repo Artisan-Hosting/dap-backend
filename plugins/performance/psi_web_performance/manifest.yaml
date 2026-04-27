@@ -1,0 +1,18 @@
+# PSI plugin manifest. The env list documents required secrets so operators
+# remember to export them before running audits.
+id: psi_web_performance
+name: PageSpeed Insights web performance snapshot
+version: 0.1.0
+entrypoint: run.py
+runtime: python
+triggers:
+  any:
+    - entity: web_service
+      where:
+        scheme: https
+limits:
+  timeout_seconds: 120
+  memory_mb: 256
+env:
+  - PAGESPEED_API_KEY
+  - PAGESPEED_CREDENTIALS_FILE

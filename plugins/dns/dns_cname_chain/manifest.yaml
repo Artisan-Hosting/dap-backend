@@ -1,0 +1,9 @@
+# Manifest describing the CNAME chain resolution test.
+id: dns_cname_chain
+name: CNAME chain resolution check
+version: 0.1.0
+entrypoint: run.py
+runtime: python
+limits:
+  timeout_seconds: 15
+env: []

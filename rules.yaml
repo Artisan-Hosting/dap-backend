@@ -1,0 +1,51 @@
+# Planner rules powering the prototype orchestrator. The structure mirrors the
+# YAML snippet described in `outline.md` §11 while keeping conditions simple
+# enough for non-Rust contributors to edit confidently.
+rules:
+  - name: https web services
+    when:
+      entity: web_service
+      attr_equals:
+        scheme: https
+        alive: "true"
+    run:
+      - web_hsts
+      - web_security_headers
+      - psi_web_performance
+      - web_mixed_content
+  - name: mail service profile
+    when:
+      entity: service_profile
+      attr_equals:
+        role: mail
+    run:
+      - dns_dmarc_policy
+  - name: cname resolution chain
+    when:
+      entity: dns_record
+      attr_equals:
+        type: CNAME
+    run:
+      - dns_cname_chain
+  - name: wordpress site profile
+    when:
+      entity: site_profile
+      attr_equals:
+        kind: cms
+        provider: wordpress
+    run:
+      - wp_touchpoints
+  - name: basic site profile
+    when:
+      entity: site_profile
+      attr_equals:
+        kind: basic
+    run:
+      - web_basic_surface
+  - name: ip observations
+    when:
+      entity: ip_address
+    run:
+      - ip_reputation_dnsbl
+      - ip_hosting_provider
+      - ip_geolocation
