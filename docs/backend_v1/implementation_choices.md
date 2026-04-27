@@ -9,6 +9,12 @@ This file captures the service decisions that are now concrete in code.
 - by default, hostnames with more than two labels are forced into `single_site` mode via `force_single_site_for_hostnames = true`
 - apex-like targets continue to use the configured `default_scope_mode`
 
+## Discovery Fallbacks
+
+- discovery prefers `dig` for DNS lookups, but falls back to the system resolver for A/AAAA addresses and to the `host` command for MX/TXT/CNAME data when `dig` returns no usable records
+- this fallback path exists because some environments still allow normal name resolution and HTTPS fetches while `dig` and `crt.sh` are unreliable or blocked
+- keeping those fallbacks in discovery is important because missing address, mail, or site-profile facts can collapse planner applicability and make a sweep look like an apex-only run
+
 ## Capability Registry
 
 - support is computed from plugin manifest presence, entrypoint existence, runtime support, env readiness, and enable/disable filters
@@ -20,6 +26,7 @@ This file captures the service decisions that are now concrete in code.
 - runs left in `discovering`, `planning`, `running`, or `aggregating` are re-queued on startup
 - partial database rows for those runs are cleared before retry
 - the worker also recreates the run artifact directory from scratch before reprocessing
+- the queue and worker model still assume a single active backend process against one database; running multiple backend instances against the same store is a debugging-only scenario and can produce confusing final snapshots
 
 ## Cache and Deduping
 
@@ -42,3 +49,8 @@ The database stores relative paths from `storage.artifacts_root` so the filesyst
 - the backend treats `report.json` as canonical
 - HTML rendering is not part of the HTTP contract in this service pass
 - review metadata is represented as a placeholder block so the frontend contract already has a stable slot for later workflow features
+
+## Local Debugging
+
+- `scripts/debug_backend.py` is the verbose local debug client for the backend
+- it captures the supported catalog, run creation response, periodic status polls, final results, and final report payloads under `artifacts/debug-client/<timestamp>/`

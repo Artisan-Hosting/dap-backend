@@ -109,13 +109,6 @@ struct RequestedTestRow {
     reason: Option<String>,
 }
 
-#[derive(Debug, Clone, FromRow)]
-struct PlannedCountRow {
-    planned: i64,
-    completed: i64,
-    failed_to_start: i64,
-}
-
 #[allow(dead_code)]
 #[derive(Debug, Clone, FromRow)]
 struct ResultRow {
@@ -834,13 +827,34 @@ impl Storage {
         effective_run_id: &str,
         outer_run_id: &str,
     ) -> Result<RunCounts> {
-        let row = sqlx::query_as::<_, PlannedCountRow>(
-            "SELECT COUNT(*) as planned, COALESCE(SUM(CASE WHEN state = 'completed' THEN 1 ELSE 0 END), 0) as completed, COALESCE(SUM(CASE WHEN state = 'failed_to_start' THEN 1 ELSE 0 END), 0) as failed_to_start FROM planned_tests WHERE run_id = ?",
+        let planned: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM planned_tests WHERE run_id = ?")
+                .bind(effective_run_id)
+                .fetch_one(&self.pool)
+                .await
+                .with_context(|| {
+                    format!("failed to load planned count for run {effective_run_id}")
+                })?;
+
+        let completed: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM planned_tests WHERE run_id = ? AND state = 'completed'",
         )
         .bind(effective_run_id)
         .fetch_one(&self.pool)
         .await
-        .with_context(|| format!("failed to load planned counts for run {effective_run_id}"))?;
+        .with_context(|| {
+            format!("failed to load completed planned count for run {effective_run_id}")
+        })?;
+
+        let failed_to_start: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM planned_tests WHERE run_id = ? AND state = 'failed_to_start'",
+        )
+        .bind(effective_run_id)
+        .fetch_one(&self.pool)
+        .await
+        .with_context(|| {
+            format!("failed to load failed_to_start planned count for run {effective_run_id}")
+        })?;
 
         let rejected_not_applicable: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM run_requested_tests WHERE run_id = ? AND state = 'rejected_not_applicable'",
@@ -851,9 +865,9 @@ impl Storage {
         .with_context(|| format!("failed to load requested test counts for run {outer_run_id}"))?;
 
         Ok(RunCounts {
-            planned: as_u64(row.planned),
-            completed: as_u64(row.completed),
-            failed_to_start: as_u64(row.failed_to_start),
+            planned: as_u64(planned),
+            completed: as_u64(completed),
+            failed_to_start: as_u64(failed_to_start),
             rejected_not_applicable: as_u64(rejected_not_applicable),
         })
     }

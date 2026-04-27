@@ -10,6 +10,7 @@ in `backend_v1.md`.
 - `backend.toml` — Backend service configuration.
 - `rules.yaml` — Declarative planner rules mapping facts to tests.
 - `plugins/` — Hot-swappable plugin stubs with manifests and Python entrypoints.
+- `scripts/debug_backend.py` — verbose debug client for listing tests, submitting runs, polling status, and saving raw JSON snapshots.
 - `docs/backend_v1/` — documented API, schema, report, and backend contract choices.
 
 ### Implemented Prototype Tests
@@ -28,6 +29,7 @@ in `backend_v1.md`.
 - `psi_web_performance` — Calls Google's PSI API when credentials are provided via `PAGESPEED_API_KEY` or `PAGESPEED_CREDENTIALS_FILE`/`GOOGLE_APPLICATION_CREDENTIALS` (service account JSON).
 
 Discovery persists site profiles, dead hosts, planned tests, results, and a canonical `report.json` for each run.
+When `dig` is unavailable or returns empty results from this environment, discovery now falls back to the system resolver for A/AAAA records and to `host` for MX/TXT/CNAME lookups so the planner still receives the facts needed for sweep and applicability decisions.
 
 ## Getting Started
 
@@ -56,6 +58,9 @@ curl http://127.0.0.1:3000/v1/tests
 curl -X POST http://127.0.0.1:3000/v1/runs \
   -H 'content-type: application/json' \
   -d '{"target":"artisanhosting.net","requested_tests":["dns_dmarc_policy"]}'
+
+# Verbose end-to-end backend debug flow
+./scripts/debug_backend.py --target artisanhosting.net --force-refresh
 ```
 
 ### Python Plugin Dependencies
@@ -69,6 +74,12 @@ At this stage the backend will:
 3. Persist submitted runs in MySQL.
 4. Execute queued runs in an embedded worker loop.
 5. Persist discovery facts, planned tests, results, artifacts, and canonical `report.json` output.
+
+## Debugging
+
+- `scripts/debug_backend.py` is the intended local debugging tool for this backend.
+- It lists the supported catalog from `GET /v1/tests`, submits a run, polls `GET /v1/runs/{run_id}`, and saves all raw payloads under `artifacts/debug-client/<timestamp>/`.
+- The backend is currently designed around one API process plus one embedded worker loop. Running multiple backend instances against the same MySQL database can interfere with queue ownership and make result snapshots confusing.
 
 ## Contracts
 

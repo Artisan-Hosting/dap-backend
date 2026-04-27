@@ -8,7 +8,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
-    net::IpAddr,
+    net::{IpAddr, ToSocketAddrs},
     path::PathBuf,
     process::Command,
 };
@@ -1140,6 +1140,12 @@ fn query_txt_records(name: &str, zone_dump: &ZoneDump) -> Result<Vec<String>> {
     if !records.is_empty() {
         return Ok(records);
     }
+
+    let records = host_short(name, "TXT")?;
+    if !records.is_empty() {
+        return Ok(records);
+    }
+
     Ok(zone_dump.lookup(name, "TXT").cloned().unwrap_or_default())
 }
 
@@ -1148,6 +1154,14 @@ fn query_mx_records(name: &str, zone_dump: &ZoneDump) -> Result<Vec<MxRecord>> {
     for raw in dig_short(name, Some("MX"))? {
         if let Some(record) = parse_mx_record(&raw) {
             records.push(record);
+        }
+    }
+
+    if records.is_empty() {
+        for raw in host_short(name, "MX")? {
+            if let Some(record) = parse_mx_record(&raw) {
+                records.push(record);
+            }
         }
     }
 
@@ -1311,6 +1325,11 @@ fn query_cname_record(name: &str, zone_dump: &ZoneDump) -> Result<Option<String>
     if let Some(record) = records.into_iter().next() {
         return Ok(Some(record));
     }
+
+    if let Some(record) = host_short(name, "CNAME")?.into_iter().next() {
+        return Ok(Some(record));
+    }
+
     Ok(zone_dump
         .lookup(name, "CNAME")
         .and_then(|values| values.first().cloned()))
@@ -1321,6 +1340,11 @@ fn query_address_records(name: &str, zone_dump: &ZoneDump) -> Result<Vec<String>
     addresses.extend(dig_short(name, Some("A"))?);
     addresses.extend(dig_short(name, Some("AAAA"))?);
     let addresses = normalize_ip_addresses(addresses);
+    if !addresses.is_empty() {
+        return Ok(addresses);
+    }
+
+    let addresses = system_lookup_ip_addresses(name);
     if !addresses.is_empty() {
         return Ok(addresses);
     }
@@ -1349,6 +1373,15 @@ fn normalize_ip_addresses(values: Vec<String>) -> Vec<String> {
         .filter_map(|value| value.parse::<IpAddr>().ok().map(|ip| ip.to_string()))
         .filter(|value| seen.insert(value.clone()))
         .collect()
+}
+
+fn system_lookup_ip_addresses(name: &str) -> Vec<String> {
+    let Ok(addresses) = (name, 0).to_socket_addrs() else {
+        debug!(host = name, "system resolver returned no socket addresses");
+        return Vec::new();
+    };
+
+    normalize_ip_addresses(addresses.map(|address| address.ip().to_string()).collect())
 }
 
 fn dig_short(name: &str, record_type: Option<&str>) -> Result<Vec<String>> {
@@ -1391,6 +1424,122 @@ fn dig_short(name: &str, record_type: Option<&str>) -> Result<Vec<String>> {
         lines.push(unquoted.to_lowercase());
     }
     Ok(lines)
+}
+
+fn host_short(name: &str, record_type: &str) -> Result<Vec<String>> {
+    let output = Command::new("host")
+        .arg("-t")
+        .arg(record_type.to_ascii_lowercase())
+        .arg(name)
+        .output()
+        .with_context(|| format!("failed to invoke host for {} {}", record_type, name))?;
+
+    if !output.status.success() {
+        debug!(
+            command = "host",
+            host = name,
+            record_type,
+            status = %output.status,
+            "host command returned non-zero status"
+        );
+        return Ok(Vec::new());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_host_output(&stdout, record_type))
+}
+
+fn parse_host_output(stdout: &str, record_type: &str) -> Vec<String> {
+    let record_type = record_type.to_ascii_uppercase();
+    stdout
+        .lines()
+        .filter_map(|line| parse_host_output_line(line.trim(), &record_type))
+        .collect()
+}
+
+fn parse_host_output_line(line: &str, record_type: &str) -> Option<String> {
+    match record_type {
+        "TXT" => parse_host_txt_line(line),
+        "MX" => parse_host_mx_line(line),
+        "CNAME" => parse_host_cname_line(line),
+        _ => None,
+    }
+}
+
+fn parse_host_txt_line(line: &str) -> Option<String> {
+    let mut values = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => {
+                if in_quotes {
+                    values.push(current.clone());
+                    current.clear();
+                    in_quotes = false;
+                } else {
+                    in_quotes = true;
+                }
+            }
+            '\\' if in_quotes => {
+                let mut octal = String::new();
+                for _ in 0..3 {
+                    let Some(next) = chars.peek().copied() else {
+                        break;
+                    };
+                    if !matches!(next, '0'..='7') {
+                        break;
+                    }
+                    octal.push(next);
+                    let _ = chars.next();
+                }
+
+                if octal.len() == 3 {
+                    if let Ok(value) = u8::from_str_radix(&octal, 8) {
+                        current.push(value as char);
+                    }
+                } else if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            _ if in_quotes => current.push(ch),
+            _ => {}
+        }
+    }
+
+    if values.is_empty() {
+        None
+    } else {
+        Some(
+            values
+                .join("")
+                .chars()
+                .map(|ch| if ch.is_control() { ' ' } else { ch })
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase(),
+        )
+    }
+}
+
+fn parse_host_mx_line(line: &str) -> Option<String> {
+    let suffix = line.split(" mail is handled by ").nth(1)?;
+    let mut parts = suffix.split_whitespace();
+    let preference = parts.next()?;
+    let exchange = canonical_host(parts.next()?);
+    Some(format!("{preference} {exchange}"))
+}
+
+fn parse_host_cname_line(line: &str) -> Option<String> {
+    let target = line
+        .split(" is an alias for ")
+        .nth(1)
+        .or_else(|| line.split(" is a nickname for ").nth(1))?;
+    Some(canonical_host(target.trim_end_matches('.')))
 }
 
 #[derive(Default)]
@@ -1541,7 +1690,7 @@ fn canonical_value(record_type: &str, value: String) -> String {
 mod tests {
     use super::{
         SurfaceObservation, detect_surface_failure, infer_mail_provider, looks_like_website_body,
-        surface_is_psi_eligible,
+        parse_host_cname_line, parse_host_mx_line, parse_host_txt_line, surface_is_psi_eligible,
     };
 
     #[test]
@@ -1579,5 +1728,32 @@ mod tests {
             "{\"status\":\"ok\"}",
             "application/json"
         ));
+    }
+
+    #[test]
+    fn parses_host_txt_lines() {
+        assert_eq!(
+            parse_host_txt_line(
+                "_dmarc.example.com descriptive text \"v=DMARC1; p=quarantine;\\010rua=mailto:test@example.com\""
+            )
+            .as_deref(),
+            Some("v=dmarc1; p=quarantine; rua=mailto:test@example.com")
+        );
+    }
+
+    #[test]
+    fn parses_host_mx_lines() {
+        assert_eq!(
+            parse_host_mx_line("example.com mail is handled by 10 mail.example.net.").as_deref(),
+            Some("10 mail.example.net")
+        );
+    }
+
+    #[test]
+    fn parses_host_cname_lines() {
+        assert_eq!(
+            parse_host_cname_line("www.example.com is an alias for proxy.example.net.").as_deref(),
+            Some("proxy.example.net")
+        );
     }
 }
