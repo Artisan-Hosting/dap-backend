@@ -1,1 +1,0 @@
-{"test_id": "web_mixed_content", "target": "stats.artisanhosting.net", "status": "error", "severity": "informational", "evidence": {"error": "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate (_ssl.c:1081)"}, "recommendations": ["Verify HTTPS reachability and retry"], "notes": "Mixed content scan failed"}

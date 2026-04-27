@@ -1,8 +1,0 @@
-{
-  "exit_code": 0,
-  "status": "error",
-  "stderr_non_empty": false,
-  "target": "docs.artisanhosting.net",
-  "test_id": "web_security_headers",
-  "timed_out": false
-}

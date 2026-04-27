@@ -1,8 +1,0 @@
-{
-  "exit_code": null,
-  "status": "error",
-  "stderr_non_empty": false,
-  "target": "uptime.artisanhosting.net",
-  "test_id": "web_mixed_content",
-  "timed_out": true
-}

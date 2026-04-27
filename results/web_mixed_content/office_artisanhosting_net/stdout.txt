@@ -1,1 +1,0 @@
-{"test_id": "web_mixed_content", "target": "office.artisanhosting.net", "status": "warn", "severity": "low", "evidence": {"http_reference_count": 2, "hosts": ["www.apache.org", "www.w3.org"]}, "recommendations": ["Replace hardcoded http:// assets with HTTPS equivalents"], "notes": null}

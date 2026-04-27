@@ -1,1 +1,0 @@
-{"test_id": "dns_dmarc_policy", "target": "artisanhosting.net", "status": "pass", "severity": "informational", "evidence": {"dmarc_txts": ["v=DMARC1; p=quarantine; sp=quarantine; pct=100; \nrua=mailto:dwhitfield@artisanhosting.net; adkim=s; aspf=s; fo=1; ri=86400"], "spf_present": true, "tls_rpt_present": false}, "recommendations": [], "notes": null}

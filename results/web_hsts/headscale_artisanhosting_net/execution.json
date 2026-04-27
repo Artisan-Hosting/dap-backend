@@ -1,8 +1,0 @@
-{
-  "exit_code": null,
-  "status": "error",
-  "stderr_non_empty": false,
-  "target": "headscale.artisanhosting.net",
-  "test_id": "web_hsts",
-  "timed_out": true
-}

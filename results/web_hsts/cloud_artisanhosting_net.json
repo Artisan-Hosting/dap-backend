@@ -1,9 +1,0 @@
-{
-  "test_id": "web_hsts",
-  "target": "cloud.artisanhosting.net",
-  "status": "error",
-  "severity": "informational",
-  "evidence": null,
-  "recommendations": [],
-  "notes": "plugin timed out after 20s"
-}

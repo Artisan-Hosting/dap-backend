@@ -1,8 +1,0 @@
-{
-  "exit_code": 0,
-  "status": "pass",
-  "stderr_non_empty": false,
-  "target": "plausible.artisanhosting.net",
-  "test_id": "web_hsts",
-  "timed_out": false
-}

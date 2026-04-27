@@ -1,1 +1,0 @@
-{"test_id": "dns_cname_chain", "target": "api.artisanhosting.net", "status": "pass", "severity": "informational", "evidence": {"chain": [], "terminal": "api.artisanhosting.net", "addresses": ["104.21.4.102", "172.67.154.27", "2606:4700:3033::ac43:9a1b", "2606:4700:3032::6815:466"], "depth": 0}, "recommendations": [], "notes": null}

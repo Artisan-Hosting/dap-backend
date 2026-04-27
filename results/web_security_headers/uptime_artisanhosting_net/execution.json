@@ -1,8 +1,0 @@
-{
-  "exit_code": 0,
-  "status": "warn",
-  "stderr_non_empty": false,
-  "target": "uptime.artisanhosting.net",
-  "test_id": "web_security_headers",
-  "timed_out": false
-}
