@@ -2,9 +2,10 @@
 //!
 //! The test plugins rely on Python modules (`httpx`, `beautifulsoup4`,
 //! `dnspython`). To avoid one-off manual setup, the orchestrator calls into this
-//! helper to create `.dap_env/`, ensure pip is available, and install the
-//! required packages. The provisioning happens once per workspace and writes a
-//! stamp file so subsequent runs skip redundant `pip install` executions.
+//! helper to create a shared workspace virtualenv, ensure pip is available, and
+//! install the required packages. The provisioning happens once per workspace
+//! and writes a stamp file so subsequent runs skip redundant `pip install`
+//! executions.
 
 use std::{
     fs,
@@ -27,13 +28,12 @@ const PYTHON_DEPS: &[&str] = &[
     "requests",
 ];
 
-/// Ensure the Python virtual environment exists and dependencies are installed.
+/// Ensure the backend worker Python virtual environment exists and dependencies are installed.
 ///
 /// Returns the path to the Python interpreter inside the isolated venv.
 pub fn ensure_python_env() -> Result<PathBuf> {
-    // Each run gets its own isolated interpreter directory so plugin state does
-    // not leak across executions.
-    let venv_path = workspace::create_isolated_dir("venvs")?;
+    let venv_path = workspace::workspace_root().join("venvs").join("shared");
+    fs::create_dir_all(&venv_path)?;
     create_virtualenv(&venv_path)?;
 
     let python_bin = venv_python(&venv_path);
@@ -42,6 +42,10 @@ pub fn ensure_python_env() -> Result<PathBuf> {
 }
 
 fn create_virtualenv(venv_path: &Path) -> Result<()> {
+    if venv_python(venv_path).exists() {
+        return Ok(());
+    }
+
     let candidates = if cfg!(windows) {
         ["python", "python3"]
     } else {

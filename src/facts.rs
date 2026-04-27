@@ -19,7 +19,7 @@ pub struct FactId(pub String);
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FactEntity(pub String);
 
-/// Complete fact structure used across the orchestrator.
+/// Complete fact structure used across discovery, planning, and backend execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Fact {
     /// Top-level target (usually the apex domain) the fact belongs to.

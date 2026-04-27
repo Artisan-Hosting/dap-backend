@@ -6,11 +6,11 @@
 
 use std::{fs, path::Path};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// High-level configuration for a single audit run.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RunConfig {
     /// Primary domain supplied by the operator (e.g., `example.com`).
     pub domain: String,
@@ -34,8 +34,8 @@ pub struct RunConfig {
     pub report: ReportConfig,
 }
 
-/// Defines how widely the orchestrator should explore hosts for a run.
-#[derive(Debug, Clone, Deserialize)]
+/// Defines how widely the backend worker should explore hosts for a run.
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ScopeConfig {
     /// Sweep across discovered subdomains (`domain_sweep`) or target a specific site (`single_site`).
     #[serde(default = "default_scope_mode")]
@@ -55,7 +55,7 @@ impl Default for ScopeConfig {
 }
 
 /// Scope selector within the run configuration.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ScopeMode {
     /// Enumerate and test multiple hosts across the domain.
@@ -65,7 +65,7 @@ pub enum ScopeMode {
 }
 
 /// PageSpeed Insights settings.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PsiConfig {
     /// Whether PSI collection is enabled for this run.
     #[serde(default = "default_true")]
@@ -85,9 +85,9 @@ pub struct PsiConfig {
 }
 
 /// Execution guardrails covering concurrency and rate limiting.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ExecutionConfig {
-    /// Maximum in-flight tasks across the orchestrator.
+    /// Maximum in-flight tasks across the backend worker.
     #[serde(default = "default_max_workers")]
     pub max_workers: usize,
     /// Per-host concurrency controls to avoid hammering a single domain.
@@ -105,7 +105,7 @@ impl Default for ExecutionConfig {
 }
 
 /// Reporting output configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ReportConfig {
     /// Formats to emit (json, html, pdf).
     #[serde(default = "default_report_formats")]

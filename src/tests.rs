@@ -23,6 +23,31 @@ pub enum TestStatus {
     Skipped,
 }
 
+impl TestStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Warn => "warn",
+            Self::Fail => "fail",
+            Self::Error => "error",
+            Self::Info => "info",
+            Self::Skipped => "skipped",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "pass" => Some(Self::Pass),
+            "warn" => Some(Self::Warn),
+            "fail" => Some(Self::Fail),
+            "error" => Some(Self::Error),
+            "info" => Some(Self::Info),
+            "skipped" => Some(Self::Skipped),
+            _ => None,
+        }
+    }
+}
+
 /// Severity classification attached to findings.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -32,6 +57,29 @@ pub enum TestSeverity {
     High,
     Critical,
     Informational,
+}
+
+impl TestSeverity {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Critical => "critical",
+            Self::Informational => "informational",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "critical" => Some(Self::Critical),
+            "informational" => Some(Self::Informational),
+            _ => None,
+        }
+    }
 }
 
 impl Default for TestSeverity {

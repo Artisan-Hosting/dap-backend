@@ -1,0 +1,40 @@
+[server]
+bind = "127.0.0.1:3000"
+
+[storage]
+artifacts_root = "artifacts"
+
+[storage.mysql]
+host = "10.3.0.2"
+port = 3306
+database = "dynamic_audit_platform"
+username = "artisan_dap"
+password = "E*j$A^52734svN^$83N9"
+max_connections = 10
+
+[cache]
+freshness_window_seconds = 30
+dedupe_inflight = true
+
+[engine]
+rules_path = "rules.yaml"
+plugins_path = "plugins"
+default_scope_mode = "domain_sweep"
+force_single_site_for_hostnames = true
+enabled_tests = []
+disabled_tests = []
+worker_poll_interval_ms = 1000
+
+[engine.execution]
+max_workers = 4
+per_host_concurrency = 2
+
+[engine.report]
+formats = ["json"]
+
+[engine.psi]
+enabled = true
+strategies = ["mobile", "desktop"]
+categories = ["performance", "accessibility", "best-practices", "seo"]
+timeout_seconds = 120
+credentials_file = "/home/dwhitfield/Developer/Artisan_Hosting/Software/dap-backend/.gsa"

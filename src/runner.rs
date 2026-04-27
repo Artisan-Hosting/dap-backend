@@ -28,6 +28,15 @@ pub struct Runner {
 }
 
 impl Runner {
+    pub fn supports_runtime(runtime: PluginRuntime) -> bool {
+        matches!(
+            runtime,
+            PluginRuntime::Python | PluginRuntime::Shell | PluginRuntime::Binary
+        )
+    }
+}
+
+impl Runner {
     /// Create a new runner anchored at the plugin root directory.
     pub fn new(plugin_root: PathBuf, python_bin: PathBuf) -> Self {
         let python_bin = if python_bin.is_absolute() {
@@ -47,6 +56,7 @@ impl Runner {
     /// Execute a plugin manifest by spawning the requested runtime inside the
     /// managed sandbox (Python virtualenv, bash script, or native binary).
     pub async fn execute(&self, record: &PluginRecord, input: &TestInput) -> ExecutionOutcome {
+        let started_at = std::time::Instant::now();
         let manifest = &record.manifest;
         let entrypoint = match self.resolve_entrypoint(record, manifest) {
             Ok(path) => path,
@@ -57,6 +67,7 @@ impl Runner {
                     manifest.id.clone(),
                     input.target.clone(),
                     message,
+                    false,
                 );
             }
         };
@@ -98,6 +109,7 @@ impl Runner {
                     manifest.id.clone(),
                     input.target.clone(),
                     message,
+                    false,
                 );
             }
         };
@@ -120,6 +132,7 @@ impl Runner {
                     manifest.id.clone(),
                     input.target.clone(),
                     message,
+                    started_at.elapsed().as_millis() as i64,
                 );
             }
         };
@@ -134,6 +147,7 @@ impl Runner {
                         manifest.id.clone(),
                         input.target.clone(),
                         message,
+                        true,
                     );
                 }
             };
@@ -145,6 +159,7 @@ impl Runner {
                     manifest.id.clone(),
                     input.target.clone(),
                     message,
+                    true,
                 );
             }
         }
@@ -164,6 +179,7 @@ impl Runner {
                     manifest.id.clone(),
                     input.target.clone(),
                     message,
+                    true,
                 );
             }
             Err(_) => {
@@ -190,6 +206,7 @@ impl Runner {
                             manifest.id.clone(),
                             input.target.clone(),
                             message,
+                            true,
                         );
                     }
                 }
@@ -220,9 +237,11 @@ impl Runner {
                 ),
                 stdout,
                 stderr,
+                started: true,
                 timed_out: true,
                 exit_code,
                 stderr_non_empty,
+                duration_ms: started_at.elapsed().as_millis() as i64,
             };
         }
 
@@ -245,9 +264,11 @@ impl Runner {
                 ),
                 stdout,
                 stderr,
+                started: true,
                 timed_out: false,
                 exit_code,
                 stderr_non_empty,
+                duration_ms: started_at.elapsed().as_millis() as i64,
             };
         }
 
@@ -270,9 +291,11 @@ impl Runner {
                         ),
                         stdout,
                         stderr,
+                        started: true,
                         timed_out: false,
                         exit_code,
                         stderr_non_empty,
+                        duration_ms: started_at.elapsed().as_millis() as i64,
                     };
                 }
 
@@ -289,9 +312,11 @@ impl Runner {
                     output: result,
                     stdout,
                     stderr,
+                    started: true,
                     timed_out: false,
                     exit_code,
                     stderr_non_empty,
+                    duration_ms: started_at.elapsed().as_millis() as i64,
                 }
             }
             Err(err) => {
@@ -312,9 +337,11 @@ impl Runner {
                     ),
                     stdout,
                     stderr,
+                    started: true,
                     timed_out: false,
                     exit_code,
                     stderr_non_empty,
+                    duration_ms: started_at.elapsed().as_millis() as i64,
                 }
             }
         }
@@ -391,31 +418,37 @@ pub struct ExecutionOutcome {
     pub output: TestOutput,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
+    pub started: bool,
     pub timed_out: bool,
     pub exit_code: Option<i32>,
     pub stderr_non_empty: bool,
+    pub duration_ms: i64,
 }
 
 impl ExecutionOutcome {
-    fn spawn_failed(test_id: String, target: String, message: String) -> Self {
+    fn spawn_failed(test_id: String, target: String, message: String, duration_ms: i64) -> Self {
         Self {
             output: TestOutput::placeholder(test_id, target, TestStatus::Error, message.clone()),
             stdout: Vec::new(),
             stderr: message.into_bytes(),
+            started: false,
             timed_out: false,
             exit_code: None,
             stderr_non_empty: true,
+            duration_ms,
         }
     }
 
-    fn runtime_error(test_id: String, target: String, message: String) -> Self {
+    fn runtime_error(test_id: String, target: String, message: String, started: bool) -> Self {
         Self {
             output: TestOutput::placeholder(test_id, target, TestStatus::Error, message.clone()),
             stdout: Vec::new(),
             stderr: message.into_bytes(),
+            started,
             timed_out: false,
             exit_code: None,
             stderr_non_empty: true,
+            duration_ms: 0,
         }
     }
 }

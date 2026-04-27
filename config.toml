@@ -1,6 +1,7 @@
-# Example run configuration consumed by the Rust orchestrator. Adjust the scope
-# and credentials, then launch a run via:
-#   cargo run -- --config config.toml
+# Legacy engine run configuration kept as a reference for discovery/planning
+# settings. The backend service does not boot from this file.
+#
+# Active server configuration lives in `backend.toml`.
 
 # Primary domain we manage in this workspace.
 domain = "beckerdesign.net"

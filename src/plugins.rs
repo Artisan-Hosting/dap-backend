@@ -16,7 +16,7 @@ use walkdir::WalkDir;
 
 use crate::tests::TestId;
 
-/// High-level plugin catalog used by the orchestrator.
+/// High-level plugin catalog used by the backend worker.
 #[derive(Debug, Clone)]
 pub struct PluginCatalog {
     pub root: PathBuf,
