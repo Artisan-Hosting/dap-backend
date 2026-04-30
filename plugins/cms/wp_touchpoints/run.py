@@ -28,6 +28,7 @@ except ImportError as exc:
     }))
 
 from shared.plugin_context import resolve_web_host
+from shared.parallel import parallel_map
 
 HEADERS = {"User-Agent": "ArtisanPassiveAuditor/0.1 (+passive)"}
 
@@ -54,8 +55,9 @@ def prepare_evidence_dir(payload: Dict, test_id: str) -> Optional[Path]:
         return None
 
 
-def fetch(client: httpx.Client, url: str) -> httpx.Response:
-    return client.get(url, headers=HEADERS, follow_redirects=True, timeout=20)
+def fetch(url: str) -> httpx.Response:
+    with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=20) as client:
+        return client.get(url)
 
 
 def main() -> None:
@@ -77,10 +79,17 @@ def main() -> None:
     base = f"https://{host}"
 
     try:
-        with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=20) as client:
-            login = fetch(client, f"{base}/wp-login.php")
-            xmlrpc = fetch(client, f"{base}/xmlrpc.php")
-            rest = fetch(client, f"{base}/wp-json/")
+        login, xmlrpc, rest = [
+            response
+            for _, response in parallel_map(
+                [
+                    ("login", f"{base}/wp-login.php"),
+                    ("xmlrpc", f"{base}/xmlrpc.php"),
+                    ("rest", f"{base}/wp-json/"),
+                ],
+                lambda item: (item[0], fetch(item[1])),
+            )
+        ]
 
         # wp-login analysis
         login_noindex = False

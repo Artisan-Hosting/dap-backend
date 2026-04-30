@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 try:
     import httpx
@@ -26,6 +26,7 @@ except ImportError as exc:  # pragma: no cover - dependency hint for operators
     }))
 
 from shared.plugin_context import resolve_web_host
+from shared.parallel import parallel_map
 
 HEADERS = {
     "User-Agent": "ArtisanPassiveAuditor/0.1 (+passive)",
@@ -101,9 +102,10 @@ def classify_response(resp: httpx.Response) -> list[str]:
     return reasons
 
 
-def probe_endpoint(client: httpx.Client, base: str, path: str) -> Optional[Tuple[httpx.Response, list[str]]]:
+def probe_endpoint(base: str, path: str) -> Optional[Dict]:
     try:
-        resp = client.get(f"{base}{path}")
+        with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=15) as client:
+            resp = client.get(f"{base}{path}")
     except Exception:
         return None
 
@@ -112,7 +114,7 @@ def probe_endpoint(client: httpx.Client, base: str, path: str) -> Optional[Tuple
         return None
     if not reasons and resp.status_code >= 500:
         return None
-    return resp, reasons
+    return summarize(resp, reasons, path)
 
 
 def summarize(resp: httpx.Response, reasons: list[str], path: str) -> Dict:
@@ -150,13 +152,11 @@ def main() -> None:
         base = f"{scheme}://{host}"
         findings: list[Dict] = []
 
-        with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=15) as client:
-            for path in FUZZ_PATHS:
-                probe = probe_endpoint(client, base, path)
-                if probe is None:
-                    continue
-                resp, reasons = probe
-                findings.append(summarize(resp, reasons, path))
+        findings = [
+            item
+            for item in parallel_map(FUZZ_PATHS, lambda path: probe_endpoint(base, path))
+            if item is not None
+        ]
 
         if evidence_dir:
             (evidence_dir / "findings.json").write_text(json.dumps(findings, indent=2), encoding="utf-8")

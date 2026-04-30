@@ -30,6 +30,8 @@ except ImportError as exc:
         "notes": f"Missing dependency: {exc}",
     }))
 
+from shared.parallel import parallel_map
+
 COMMON_DKIM_SELECTORS = [
     "default",
     "selector1",
@@ -113,15 +115,16 @@ def query_mx(name: str) -> list[str]:
 
 
 def query_addresses(name: str) -> list[str]:
-    addresses: list[str] = []
-    resolver = get_resolver()
-    for record_type in ("A", "AAAA"):
+    def resolve(record_type: str) -> list[str]:
         try:
-            for record in resolver.resolve(name, record_type):
-                addresses.append(record.to_text())
+            resolver = get_resolver()
+            return [record.to_text() for record in resolver.resolve(name, record_type)]
         except Exception:
-            continue
-    return sorted(dict.fromkeys(addresses))
+            return []
+
+    addresses = parallel_map(("A", "AAAA"), resolve)
+    flattened = [address for group in addresses for address in group]
+    return sorted(dict.fromkeys(flattened))
 
 
 def is_same_domain_or_subdomain(candidate: str, domain: str) -> bool:
@@ -179,8 +182,12 @@ def dkim_posture(domain: str) -> Dict[str, Any]:
     keylen_ok = "unknown"
     records: dict[str, str] = {}
 
-    for selector in COMMON_DKIM_SELECTORS:
-        txt_records = query_txt(f"{selector}._domainkey.{domain}")
+    selector_results = parallel_map(
+        COMMON_DKIM_SELECTORS,
+        lambda selector: (selector, query_txt(f"{selector}._domainkey.{domain}")),
+    )
+
+    for selector, txt_records in selector_results:
         if not txt_records:
             continue
 
@@ -313,15 +320,14 @@ def fetch_mta_sts_policy(domain: str) -> Dict[str, Any]:
 
 
 def build_mx_host_details(mx_hosts: list[str], domain: str) -> list[Dict[str, Any]]:
-    details = []
-    for host in mx_hosts:
-        provider = infer_mail_provider([host], domain)
-        details.append({
+    return parallel_map(
+        mx_hosts,
+        lambda host: {
             "host": host,
             "addresses": query_addresses(host),
-            "provider_guess": provider.get("name"),
-        })
-    return details
+            "provider_guess": infer_mail_provider([host], domain).get("name"),
+        },
+    )
 
 
 def main() -> None:
@@ -339,11 +345,27 @@ def main() -> None:
         }, sys.stdout)
         return
 
-    dmarc_txts = query_txt(f"_dmarc.{domain}")
-    spf_txts = query_txt(domain)
-    mx_hosts = query_mx(domain)
-    tls_rpt_txts = query_txt(f"_smtp._tls.{domain}")
-    bimi_txts = query_txt(f"default._bimi.{domain}")
+    initial_queries = dict(
+        parallel_map(
+            [
+                ("dmarc", f"_dmarc.{domain}"),
+                ("spf", domain),
+                ("mx", domain),
+                ("tls_rpt", f"_smtp._tls.{domain}"),
+                ("bimi", f"default._bimi.{domain}"),
+            ],
+            lambda item: (
+                item[0],
+                query_mx(item[1]) if item[0] == "mx" else query_txt(item[1]),
+            ),
+        )
+    )
+
+    dmarc_txts = initial_queries["dmarc"]
+    spf_txts = initial_queries["spf"]
+    mx_hosts = initial_queries["mx"]
+    tls_rpt_txts = initial_queries["tls_rpt"]
+    bimi_txts = initial_queries["bimi"]
 
     dmarc = parse_dmarc(dmarc_txts)
     spf = spf_posture(spf_txts)

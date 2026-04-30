@@ -10,6 +10,8 @@ from typing import Dict, List, Optional
 
 import httpx
 
+from shared.parallel import parallel_map
+
 API = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
 SCOPE = "https://www.googleapis.com/auth/pagespeedonline"
 
@@ -211,7 +213,8 @@ def _extract_strategy(payload: dict) -> Dict[str, object]:
 
 
 def fetch_psi_metrics(url: str) -> Dict[str, Dict[str, object]]:
-    return {
-        "mobile": _extract_strategy(_get(url, "mobile")),
-        "desktop": _extract_strategy(_get(url, "desktop")),
-    }
+    strategies = parallel_map(
+        ("mobile", "desktop"),
+        lambda strategy: (strategy, _extract_strategy(_get(url, strategy))),
+    )
+    return dict(strategies)

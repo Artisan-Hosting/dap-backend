@@ -23,6 +23,7 @@ except ImportError as exc:
     }))
 
 from shared.plugin_context import resolve_web_host
+from shared.parallel import parallel_map
 
 HEADERS = {"User-Agent": "ArtisanPassiveAuditor/0.1 (+passive)"}
 
@@ -60,9 +61,10 @@ def fetch_root(host: str) -> Tuple[str, httpx.Response]:
     raise RuntimeError(str(last_error) if last_error else "unable to fetch root document")
 
 
-def fetch_optional(client: httpx.Client, url: str) -> Optional[httpx.Response]:
+def fetch_optional(url: str) -> Optional[httpx.Response]:
     try:
-        return client.get(url)
+        with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=15) as client:
+            return client.get(url)
     except Exception:
         return None
 
@@ -105,32 +107,40 @@ def main() -> None:
         readme_present = False
         license_present = False
 
-        with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=15) as client:
-            robots = fetch_optional(client, f"{scheme}://{host}/robots.txt")
-            if robots and robots.status_code == 200:
-                robots_txt_ok = True
+        fetch_targets = [
+            ("robots", f"{scheme}://{host}/robots.txt"),
+            ("sitemap", f"{scheme}://{host}/sitemap.xml"),
+            ("wp_sitemap", f"{scheme}://{host}/wp-sitemap.xml"),
+            ("readme", f"{scheme}://{host}/readme.html"),
+            ("license", f"{scheme}://{host}/license.txt"),
+        ]
+        fetched = dict(parallel_map(fetch_targets, lambda item: (item[0], fetch_optional(item[1]))))
+
+        robots = fetched.get("robots")
+        if robots and robots.status_code == 200:
+            robots_txt_ok = True
+            if evidence_dir:
+                (evidence_dir / "robots.txt").write_text(robots.text, encoding="utf-8", errors="ignore")
+
+        for sitemap_key, sitemap_path in (("sitemap", "sitemap.xml"), ("wp_sitemap", "wp-sitemap.xml")):
+            sitemap = fetched.get(sitemap_key)
+            if sitemap and sitemap.status_code == 200:
+                sitemap_ok = True
                 if evidence_dir:
-                    (evidence_dir / "robots.txt").write_text(robots.text, encoding="utf-8", errors="ignore")
+                    (evidence_dir / sitemap_path).write_text(
+                        sitemap.text,
+                        encoding="utf-8",
+                        errors="ignore",
+                    )
+                break
 
-            for sitemap_path in ("/sitemap.xml", "/wp-sitemap.xml"):
-                sitemap = fetch_optional(client, f"{scheme}://{host}{sitemap_path}")
-                if sitemap and sitemap.status_code == 200:
-                    sitemap_ok = True
-                    if evidence_dir:
-                        (evidence_dir / sitemap_path.strip("/")).write_text(
-                            sitemap.text,
-                            encoding="utf-8",
-                            errors="ignore",
-                        )
-                    break
+        readme = fetched.get("readme")
+        if readme and readme.status_code == 200:
+            readme_present = True
 
-            readme = fetch_optional(client, f"{scheme}://{host}/readme.html")
-            if readme and readme.status_code == 200:
-                readme_present = True
-
-            license_file = fetch_optional(client, f"{scheme}://{host}/license.txt")
-            if license_file and license_file.status_code == 200:
-                license_present = True
+        license_file = fetched.get("license")
+        if license_file and license_file.status_code == 200:
+            license_present = True
 
         if evidence_dir:
             (evidence_dir / "root.html").write_text(html, encoding="utf-8", errors="ignore")

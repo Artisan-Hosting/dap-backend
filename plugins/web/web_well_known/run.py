@@ -27,6 +27,7 @@ except ImportError as exc:  # pragma: no cover - dependency hint for operators
     }))
 
 from shared.plugin_context import resolve_web_host
+from shared.parallel import parallel_map
 
 HEADERS = {"User-Agent": "ArtisanPassiveAuditor/0.1 (+passive)"}
 ROOT_PATHS = [
@@ -76,9 +77,10 @@ def fetch_root_scheme(host: str) -> str:
     raise RuntimeError(str(last_error) if last_error else "unable to fetch root document")
 
 
-def probe_url(client: httpx.Client, url: str) -> Optional[httpx.Response]:
+def probe_url(url: str) -> Optional[httpx.Response]:
     try:
-        resp = client.get(url)
+        with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=15) as client:
+            resp = client.get(url)
     except Exception:
         return None
     return resp if resp.status_code != 404 else None
@@ -117,21 +119,18 @@ def main() -> None:
 
     try:
         scheme = fetch_root_scheme(host)
+        root_urls = [(host, path, f"{scheme}://{host}{path}") for path in ROOT_PATHS]
+        subdomain_urls = [
+            (f"{subdomain}.{host}", path, f"{scheme}://{subdomain}.{host}{path}")
+            for subdomain, path in SUBDOMAIN_PATHS
+        ]
         findings: list[Dict] = []
-
-        with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=15) as client:
-            for path in ROOT_PATHS:
-                url = f"{scheme}://{host}{path}"
-                resp = probe_url(client, url)
-                if resp is not None and resp.status_code < 500:
-                    findings.append(record_response(host, path, url, resp))
-
-            for subdomain, path in SUBDOMAIN_PATHS:
-                subhost = f"{subdomain}.{host}"
-                url = f"{scheme}://{subhost}{path}"
-                resp = probe_url(client, url)
-                if resp is not None and resp.status_code < 500:
-                    findings.append(record_response(subhost, path, url, resp))
+        for response_host, path, url, resp in parallel_map(
+            root_urls + subdomain_urls,
+            lambda item: (item[0], item[1], item[2], probe_url(item[2])),
+        ):
+            if resp is not None and resp.status_code < 500:
+                findings.append(record_response(response_host, path, url, resp))
 
         if evidence_dir:
             (evidence_dir / "findings.json").write_text(json.dumps(findings, indent=2), encoding="utf-8")
