@@ -29,8 +29,8 @@ V1 is intentionally constrained.
 - Single tenant
 - Single deployment
 - Single node
-- One API process with an embedded worker loop
-- SQLite for structured data
+- One API server process plus one dedicated worker subprocess
+- MySQL for structured data
 - Filesystem storage for large artifacts
 - Web app frontend is the primary client
 - CLI shim remains possible later, but is not a v1 driver
@@ -61,7 +61,7 @@ A test is supported only if all of these are true:
 - required environment variables or credentials are available
 - plugin is enabled for this deployment
 
-Supported tests are the only tests exposed by `GET /v1/tests`.
+Supported tests are the only tests exposed by `GET /v1/tests`. This catalog includes normal plugin-backed tests plus a small set of internal discovery capabilities such as `discovery_api_probe` and `discovery_dav_probe` when they are enabled in the deployment config.
 
 ### 4.2 Applicable Test
 
@@ -99,22 +99,29 @@ A freshness window is the period in which prior results may be reused instead of
 
 ## 5. Current Codebase Mapping
 
-V1 should build around the current engine contracts instead of replacing them.
+V1 should build around the current engine contracts and the current service layout instead of replacing them.
 
-- Plugin catalog source: `src/plugins.rs`
-- Rules engine: `src/planner.rs` and `rules.yaml`
-- Discovery output: `src/discovery.rs`
-- Test result contract: `src/tests.rs`
-- Report draft: `report.draft.json`
-- HTML renderer: `src/report.rs`
+- binary entrypoint and mode switch: `src/main.rs`
+- API server and worker-process coordination: `src/backend/mod.rs`
+- worker subprocess loop: `src/backend/worker.rs`
+- storage and persistence layer: `src/backend/storage.rs`
+- capability registry: `src/backend/capabilities.rs`
+- plugin catalog source: `src/plugins.rs`
+- rules engine: `src/planner.rs` and `rules.yaml`
+- discovery output: `src/discovery.rs`
+- test result contract: `src/tests.rs`
+- report layer: `src/report.rs`
+- report draft: `report.draft.json`
 
-Important current gaps that V1 must close:
+Current implemented service pieces include:
 
-- no persistent run table
-- no persistent queue
-- no database-backed facts or planned tests
-- no canonical `report.json` output yet
-- aggregation logic is embedded inside the HTML renderer instead of a reusable report layer
+- persistent run, queue, fact, planned-test, result, artifact, and report tables in MySQL
+- a dedicated worker subprocess launched by the API server
+- cache reuse and freshness-window support
+- canonical discovery -> planning -> execution -> aggregation flow in the backend worker
+- HTML and JSON report generation paths
+
+Remaining gaps are now mostly around distributed workers, richer plugin isolation, and any future UI workflow beyond the current backend contract.
 
 ## 6. High-Level Architecture
 
@@ -124,22 +131,22 @@ The v1 service architecture is:
 [Web App]
     |
     v
-[HTTP API]
+[HTTP API Server]
     |
     +--> [Capability Registry]
     |
     +--> [Run Store / Queue Store / Results Store]
     |
-    +--> [Worker Loop]
+    +--> [Worker Process]
              |
              v
       [Discovery -> Planner -> Runner -> Aggregator]
              |
-             +--> [SQLite]
+             +--> [MySQL]
              +--> [Filesystem Artifacts]
 ```
 
-V1 should keep the API server and worker loop in the same binary and process.
+V1 keeps the API server and worker in the same binary, but runs them as separate processes. The server starts the worker subprocess with `--worker` and both sides share the same configuration and database.
 
 ## 7. Target Model
 
@@ -164,6 +171,8 @@ Filesystem-safe sanitized values may still be used for artifact paths, but they 
 The frontend gets visible tests from `GET /v1/tests` only.
 
 The frontend must not hardcode hidden or future tests into the UI.
+
+The visible catalog may include internal discovery capabilities that gate extra probing behavior during discovery. These are not user-authored plugin jobs; they are deployment toggles surfaced through the same list so the UI can present them consistently and so operators can disable them when they want a faster, less invasive audit.
 
 ### 8.2 Submit Validation
 
@@ -227,6 +236,8 @@ The audit finding status from plugins remains separate and continues to use the 
 ### 10.1 `GET /v1/tests`
 
 Returns only tests that are supported by the current deployment.
+
+The response may contain both normal plugin-backed tests and internal discovery capabilities. The latter are gated by backend configuration and control whether discovery performs extra API or DAV follow-up checks on ambiguous hosts.
 
 Example response:
 
@@ -396,13 +407,13 @@ V1 should not rely on the frontend to decide what is runnable.
 
 ### 12.1 Queue
 
-The queue must be persistent and stored in SQLite so accepted runs survive process restarts.
+The queue must be persistent and stored in MySQL so accepted runs survive process restarts.
 
 Each run record should carry enough state for the worker to resume or retry safely after restart.
 
 ### 12.2 Worker Model
 
-V1 uses one worker loop in the same process as the API.
+V1 uses one dedicated worker subprocess coordinated with the API server.
 
 The worker repeatedly:
 
@@ -435,7 +446,7 @@ These already align with the existing config model in `RunConfig.execution` and 
 
 ### 13.1 Storage Split
 
-Use SQLite for queryable structured data.
+Use MySQL for queryable structured data.
 
 Use filesystem storage for large artifacts.
 
@@ -719,10 +730,10 @@ The frontend must not be the source of truth for test support or applicability.
 
 1. Extract reusable aggregation logic from `src/report.rs` into a report service layer.
 2. Add a capability registry on top of `PluginCatalog` and runner/runtime checks.
-3. Introduce SQLite-backed `runs`, `run_requested_tests`, `facts`, `planned_tests`, and `test_results`.
+3. Introduce MySQL-backed `runs`, `run_requested_tests`, `facts`, `planned_tests`, and `test_results`.
 4. Introduce persistent artifact indexing while continuing to store stdout and stderr on disk.
 5. Add HTTP endpoints for tests, run creation, run status, and run results.
-6. Add a persistent queue and in-process worker loop.
+6. Add a persistent queue and dedicated worker subprocess.
 7. Emit canonical `report.json` from stored run data.
 8. Add TTL and cache reuse once basic end-to-end execution is stable.
 
@@ -749,7 +760,8 @@ The key design choices are:
 - reject unsupported tests immediately
 - reject non-applicable selected tests after planning without failing the run
 - use `run_id` as the primary identity for retrieval
-- store structured data in SQLite and large artifacts on disk
+- store structured data in MySQL and large artifacts on disk
 - keep history immutable and use TTL only for freshness and reuse decisions
+- run the API server and worker as separate processes from the same binary
 
 That gives the web app a stable backend contract while preserving the current strengths of the discovery, planner, runner, and reporting pipeline already present in this repository.

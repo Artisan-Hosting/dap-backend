@@ -20,13 +20,14 @@ This file captures the service decisions that are now concrete in code.
 - support is computed from plugin manifest presence, entrypoint existence, runtime support, env readiness, and enable/disable filters
 - category is derived from `plugins/<category>/<id>`
 - `psi_web_performance` is treated specially because the current manifest lists both API-key and credentials-file env vars even though the plugin supports either credential path; the registry marks it runnable when any supported PSI credential source is available
+- `discovery_api_probe` and `discovery_dav_probe` are synthetic supported tests surfaced through the same capability registry so the UI can present them in `GET /v1/tests`; their config toggles control whether discovery performs additional API or DAV follow-up probing on weak hosts
 
 ## Queue Recovery
 
 - runs left in `discovering`, `planning`, `running`, or `aggregating` are re-queued on startup
 - partial database rows for those runs are cleared before retry
 - the worker also recreates the run artifact directory from scratch before reprocessing
-- the queue and worker model still assume a single active backend process against one database; running multiple backend instances against the same store is a debugging-only scenario and can produce confusing final snapshots
+- the backend deployment expects one API server process plus one worker subprocess against a single database; running multiple independent backend stacks against the same store is a debugging-only scenario and can produce confusing queue ownership or final snapshots
 
 ## Cache and Deduping
 

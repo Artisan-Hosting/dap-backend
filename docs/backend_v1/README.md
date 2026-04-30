@@ -12,9 +12,15 @@ Files:
 
 Code mapping:
 
-- HTTP server: `src/backend/mod.rs`
+- binary entrypoint and mode switch: `src/main.rs`
+- HTTP server and worker-process coordination: `src/backend/mod.rs`
 - capability registry: `src/backend/capabilities.rs`
 - storage and query layer: `src/backend/storage.rs`
-- worker loop: `src/backend/worker.rs`
+- worker process loop: `src/backend/worker.rs`
 - migration: `migrations/0001_backend_v1.sql`
 - service config: `backend.toml`
+
+Notes:
+
+- `GET /v1/tests` includes both normal plugin-backed tests and internal discovery capabilities when configured.
+- `discovery_api_probe` and `discovery_dav_probe` are internal toggles that gate extra discovery-time probing; they are intentionally not normal plugin jobs.

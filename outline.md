@@ -74,7 +74,7 @@ Build a platform that, given a domain (e.g., `artisanhosting.net`), automaticall
 * **External API Queue** – throttles PSI calls.
 * **Aggregator** – merges results; computes score.
 * **Reporter** – renders JSON + HTML (your CSS, sign-off).
-* **Stores** – filesystem (MVP), SQLite/Postgres (later).
+* **Stores** – filesystem for large artifacts, MySQL for structured backend state.
 
 ```
 [User/CLI] → Orchestrator → Discovery → Facts → Planner → Tasks → Runner → Results
@@ -317,5 +317,4 @@ env: [PAGESPEED_API_KEY]
   <button id="finalize" {{ if .Finalized }}disabled{{ end }}>Finalize</button>
 </section>
 ```
-
 
