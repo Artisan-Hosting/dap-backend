@@ -197,7 +197,8 @@ async fn perform_discovery_pass(
             let host = host.clone();
             let apex = apex.clone();
             let zone_dump = zone_dump.clone();
-            move || site::inspect_host(&host, &apex, &zone_dump)
+            let discovery_probes = cfg.discovery_probes.clone();
+            move || site::inspect_host(&host, &apex, &zone_dump, &discovery_probes)
         })
         .await
         .context("host inspection task failed")??;
@@ -359,6 +360,7 @@ mod tests {
         },
         text::extract_surface_hosts,
     };
+    use crate::config::DiscoveryProbeConfig;
 
     #[test]
     fn detects_google_workspace_mx_provider() {
@@ -479,7 +481,8 @@ mod tests {
 
         assert!(!should_probe_api_endpoints(
             "zombie site: blank root response body",
-            Some(&profile)
+            Some(&profile),
+            true
         ));
     }
 
@@ -495,7 +498,8 @@ mod tests {
 
         assert!(should_probe_api_endpoints(
             "zombie site: blank root response body",
-            Some(&profile)
+            Some(&profile),
+            true
         ));
     }
 
@@ -509,7 +513,33 @@ mod tests {
             signals: vec!["plain".to_string()],
         };
 
-        assert!(should_probe_dav_endpoints(Some(&profile)));
+        assert!(should_probe_dav_endpoints(Some(&profile), true));
+    }
+
+    #[test]
+    fn disabled_probes_do_not_run() {
+        let profile = SiteProfile {
+            host: "artisanhosting.net".to_string(),
+            kind: "basic".to_string(),
+            provider: None,
+            confidence: 0.62,
+            signals: vec!["plain".to_string()],
+        };
+
+        let probes = DiscoveryProbeConfig {
+            api_endpoints: false,
+            dav_endpoints: false,
+        };
+
+        assert!(!should_probe_api_endpoints(
+            "zombie site: blank root response body",
+            Some(&profile),
+            probes.api_endpoints
+        ));
+        assert!(!should_probe_dav_endpoints(
+            Some(&profile),
+            probes.dav_endpoints
+        ));
     }
 
     #[test]

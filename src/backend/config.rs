@@ -6,7 +6,10 @@ use std::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::config::{ExecutionConfig, PsiConfig, ReportConfig, RunConfig, ScopeConfig, ScopeMode};
+use crate::config::{
+    DiscoveryProbeConfig, ExecutionConfig, PsiConfig, ReportConfig, RunConfig, ScopeConfig,
+    ScopeMode,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendConfig {
@@ -79,6 +82,8 @@ pub struct EngineConfig {
     pub enabled_tests: Vec<String>,
     #[serde(default)]
     pub disabled_tests: Vec<String>,
+    #[serde(default)]
+    pub discovery_probes: DiscoveryProbeConfig,
     #[serde(default = "default_worker_poll_interval_ms")]
     pub worker_poll_interval_ms: u64,
     #[serde(default)]
@@ -149,6 +154,7 @@ impl Default for EngineConfig {
             force_single_site_for_hostnames: default_true(),
             enabled_tests: Vec::new(),
             disabled_tests: Vec::new(),
+            discovery_probes: DiscoveryProbeConfig::default(),
             worker_poll_interval_ms: default_worker_poll_interval_ms(),
             psi: None,
             execution: ExecutionConfig::default(),
@@ -194,6 +200,7 @@ impl BackendConfig {
             exclude: self.engine.exclude.clone(),
             scope,
             discovery: Default::default(),
+            discovery_probes: self.engine.discovery_probes.clone(),
             psi: self.engine.psi.clone(),
             execution: self.engine.execution.clone(),
             report: self.engine.report.clone(),

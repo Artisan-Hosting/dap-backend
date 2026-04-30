@@ -26,6 +26,8 @@ except ImportError as exc:  # pragma: no cover - dependency hint for operators
         "notes": f"Missing dependency: {exc}",
     }))
 
+from shared.plugin_context import resolve_web_host
+
 HEADERS = {"User-Agent": "ArtisanPassiveAuditor/0.1 (+passive)"}
 ROOT_PATHS = [
     "/.well-known/security.txt",
@@ -45,15 +47,7 @@ def load_input() -> Dict:
 
 
 def resolve_host(payload: Dict) -> str:
-    host = payload.get("target", "")
-    for fact in payload.get("facts", []):
-        attrs = fact.get("attrs", {})
-        if fact.get("entity") == "web_service":
-            host = attrs.get("host", host)
-            break
-        if fact.get("entity") == "site_profile":
-            host = attrs.get("host", host)
-    return host or payload.get("target", "")
+    return resolve_web_host(payload)
 
 
 def prepare_evidence_dir(payload: Dict, test_id: str) -> Optional[Path]:

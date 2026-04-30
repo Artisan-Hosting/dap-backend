@@ -20,6 +20,8 @@ except ImportError as exc:  # pragma: no cover
         "notes": f"Missing dependency: {exc}",
     }))
 
+from shared.plugin_context import resolve_entity_values
+
 HEADERS = {"User-Agent": "ArtisanPassiveAuditor/0.1 (+passive)"}
 PROVIDER_PATTERNS = {
     "cloudflare": ["cloudflare", "as13335"],
@@ -42,18 +44,6 @@ def load_input() -> Dict:
     return json.loads(raw) if raw else {}
 
 
-def resolve_context(payload: Dict) -> Tuple[str, str]:
-    host = payload.get("target", "")
-    ip = ""
-    for fact in payload.get("facts", []):
-        if fact.get("entity") == "ip_address":
-            attrs = fact.get("attrs", {})
-            host = attrs.get("host", host)
-            ip = attrs.get("ip", ip)
-            break
-    return host or payload.get("target", ""), ip
-
-
 def fetch_ipinfo(ip: str) -> Dict:
     with httpx.Client(headers=HEADERS, timeout=10) as client:
         response = client.get(f"https://ipinfo.io/{ip}/json")
@@ -71,8 +61,8 @@ def classify_provider(org: str) -> Tuple[Optional[str], bool]:
 
 def main() -> None:
     payload = load_input()
-    host, ip = resolve_context(payload)
-    if not ip:
+    host, ips = resolve_entity_values(payload, "ip_address", "ip")
+    if not ips:
         json.dump({
             "test_id": "ip_hosting_provider",
             "target": payload.get("target", ""),
@@ -80,28 +70,48 @@ def main() -> None:
             "severity": "informational",
             "evidence": {},
             "recommendations": ["Ensure discovery produced ip_address facts"],
-            "notes": "Unable to determine IP for hosting provider check",
+            "notes": "Unable to determine any IPs for hosting provider check",
         }, sys.stdout)
         return
 
     try:
-        info = fetch_ipinfo(ip)
-        org = info.get("org") or ""
-        provider, cloudflare_proxy = classify_provider(org)
+        observations = []
+        providers = []
+        had_success = False
+        for ip in ips:
+            try:
+                info = fetch_ipinfo(ip)
+                had_success = True
+                org = info.get("org") or ""
+                provider, cloudflare_proxy = classify_provider(org)
+                providers.append(provider)
+                observations.append({
+                    "ip": ip,
+                    "provider": provider,
+                    "organization": org,
+                    "asn": info.get("org"),
+                    "cloudflare_proxy": cloudflare_proxy,
+                    "common_cloud_provider": provider,
+                })
+            except Exception as exc:
+                observations.append({
+                    "ip": ip,
+                    "error": str(exc),
+                })
+
+        if not had_success:
+            raise RuntimeError("all hosting provider lookups failed")
 
         json.dump({
             "test_id": "ip_hosting_provider",
-            "target": f"{host}|{ip}",
+            "target": host,
             "status": "info",
             "severity": "informational",
             "evidence": {
                 "host": host,
-                "ip": ip,
-                "provider": provider,
-                "organization": org,
-                "asn": info.get("org"),
-                "cloudflare_proxy": cloudflare_proxy,
-                "common_cloud_provider": provider,
+                "ips": ips,
+                "observations": observations,
+                "providers": [provider for provider in providers if provider],
             },
             "recommendations": [],
             "notes": None,
@@ -109,10 +119,10 @@ def main() -> None:
     except Exception as exc:
         json.dump({
             "test_id": "ip_hosting_provider",
-            "target": f"{host}|{ip}",
+            "target": host,
             "status": "error",
             "severity": "informational",
-            "evidence": {"error": str(exc), "ip": ip},
+            "evidence": {"error": str(exc), "ips": ips},
             "recommendations": ["Verify outbound HTTP access and retry"],
             "notes": "IP provider lookup failed",
         }, sys.stdout)

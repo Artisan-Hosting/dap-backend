@@ -26,6 +26,8 @@ except ImportError as exc:  # pragma: no cover - dependency hint for operators
         "notes": f"Missing dependency: {exc}",
     }))
 
+from shared.plugin_context import resolve_web_host_and_provider
+
 HEADERS = {"User-Agent": "ArtisanPassiveAuditor/0.1 (+passive)"}
 SOURCE_MAP_RE = re.compile(r"sourceMappingURL=([^\s]+)|(?:src|href)=[\"']([^\"']+\.map)[\"']", re.IGNORECASE)
 SERVER_VERSION_RE = re.compile(r"(?P<family>[A-Za-z][A-Za-z0-9._-]*)/(?P<version>\d+(?:\.\d+){1,3})")
@@ -52,18 +54,7 @@ def load_input() -> Dict:
 
 
 def resolve_context(payload: Dict) -> Tuple[str, Optional[str]]:
-    host = payload.get("target", "")
-    provider_hint = None
-
-    for fact in payload.get("facts", []):
-        if fact.get("entity") == "web_service":
-            attrs = fact.get("attrs", {})
-            host = attrs.get("host", host)
-        elif fact.get("entity") == "site_profile":
-            attrs = fact.get("attrs", {})
-            provider_hint = attrs.get("provider") or provider_hint
-
-    return host or payload.get("target", ""), provider_hint
+    return resolve_web_host_and_provider(payload)
 
 
 def prepare_evidence_dir(payload: Dict, test_id: str) -> Optional[Path]:

@@ -377,6 +377,7 @@ impl Runner {
         command.env("TMPDIR", &tmpdir);
         command.env("LANG", "C.UTF-8");
         command.env("LC_ALL", "C.UTF-8");
+        command.env("PYTHONPATH", &self.plugin_root);
     }
 
     fn resolve_entrypoint(

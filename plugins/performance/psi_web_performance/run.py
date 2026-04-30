@@ -42,6 +42,8 @@ except ImportError as exc:
         "notes": f"Missing dependency: {exc}",
     }))
 
+from shared.plugin_context import resolve_web_host
+
 ROOT = Path(__file__).resolve().parents[3]
 TMP_DIR = Path(tempfile.gettempdir()) / "artisan_dap" / "psi"
 
@@ -74,12 +76,7 @@ def load_input() -> Dict:
 
 
 def resolve_target(payload: Dict) -> str:
-    host = payload.get("target", "")
-    for fact in payload.get("facts", []):
-        if fact.get("entity") == "web_service":
-            attrs = fact.get("attrs", {})
-            host = attrs.get("host", host)
-            break
+    host = resolve_web_host(payload)
     return f"https://{host}/" if host else payload.get("target", "")
 
 

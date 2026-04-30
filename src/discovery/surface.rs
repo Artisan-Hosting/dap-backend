@@ -11,10 +11,10 @@ use tracing::debug;
 
 use super::{SiteProfile, dedupe_signals};
 
-const FETCH_HEADERS_MAX_TIME_SECS: u64 = 2;
-const FETCH_HEADERS_CONNECT_TIMEOUT_SECS: u64 = 2;
-const FETCH_BODY_MAX_TIME_SECS: u64 = 2;
-const FETCH_BODY_CONNECT_TIMEOUT_SECS: u64 = 2;
+const FETCH_HEADERS_MAX_TIME_SECS: u64 = 1;
+const FETCH_HEADERS_CONNECT_TIMEOUT_SECS: u64 = 3;
+const FETCH_BODY_MAX_TIME_SECS: u64 = 1;
+const FETCH_BODY_CONNECT_TIMEOUT_SECS: u64 = 3;
 
 /// Low-risk API endpoints to try when a host looks alive but the root body is empty.
 pub(super) const API_ENDPOINT_PROBES: &[&str] = &[
@@ -344,17 +344,23 @@ pub(super) fn detect_surface_failure(surface: &SurfaceObservation) -> Option<Str
     None
 }
 
-pub(super) fn should_probe_api_endpoints(reason: &str, profile: Option<&SiteProfile>) -> bool {
-    reason == "zombie site: blank root response body"
+pub(super) fn should_probe_api_endpoints(
+    reason: &str,
+    profile: Option<&SiteProfile>,
+    enabled: bool,
+) -> bool {
+    enabled
+        && reason == "zombie site: blank root response body"
         && !profile
             .map(super::site::is_strong_site_profile)
             .unwrap_or(false)
 }
 
-pub(super) fn should_probe_dav_endpoints(profile: Option<&SiteProfile>) -> bool {
-    !profile
-        .map(super::site::is_strong_site_profile)
-        .unwrap_or(false)
+pub(super) fn should_probe_dav_endpoints(profile: Option<&SiteProfile>, enabled: bool) -> bool {
+    enabled
+        && !profile
+            .map(super::site::is_strong_site_profile)
+            .unwrap_or(false)
 }
 
 pub(super) fn probe_api_endpoints(

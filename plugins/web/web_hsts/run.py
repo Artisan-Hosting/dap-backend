@@ -31,6 +31,8 @@ except ImportError as exc:  # pragma: no cover - dependency hint for operators
         "notes": f"Missing dependency: {exc}",
     }))
 
+from shared.plugin_context import resolve_web_host
+
 USER_AGENT = "ArtisanPassiveAuditor/0.1 (+passive; contact: audits@artisanhosting.net)"
 HEADERS = {"User-Agent": USER_AGENT}
 
@@ -53,12 +55,11 @@ def load_input() -> Dict:
 
 def resolve_host(payload: Dict) -> Tuple[str, str]:
     target = payload.get("target", "")
-    host = target
+    host = resolve_web_host(payload)
     scheme = "https"
     for fact in payload.get("facts", []):
         if fact.get("entity") == "web_service":
             attrs = fact.get("attrs", {})
-            host = attrs.get("host", host)
             scheme = attrs.get("scheme", scheme)
             break
     return scheme or "https", host or target

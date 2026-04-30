@@ -25,6 +25,11 @@ default_scope_mode = "domain_sweep"
 force_single_site_for_hostnames = false
 enabled_tests = []
 disabled_tests = ["web_api_fuzz"]
+
+[engine.discovery_probes]
+api_endpoints = true
+dav_endpoints = true
+
 worker_poll_interval_ms = 1000
 
 [engine.execution]

@@ -26,6 +26,9 @@ pub struct RunConfig {
     /// Discovery stabilization (multi-pass retries, backoff, convergence).
     #[serde(default)]
     pub discovery: DiscoveryConfig,
+    /// Optional probe toggles for ambiguous discovery targets.
+    #[serde(default)]
+    pub discovery_probes: DiscoveryProbeConfig,
     /// Optional PageSpeed Insights configuration.
     #[serde(default)]
     pub psi: Option<PsiConfig>,
@@ -53,6 +56,26 @@ impl Default for DiscoveryConfig {
         Self {
             max_passes: default_discovery_max_passes(),
             pass_backoff_ms: default_discovery_pass_backoff_ms(),
+        }
+    }
+}
+
+/// Probe toggles for ambiguous discovery targets.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DiscoveryProbeConfig {
+    /// Probe API-like endpoints after an empty root response.
+    #[serde(default = "default_true")]
+    pub api_endpoints: bool,
+    /// Probe DAV-like endpoints on weak or ambiguous live hosts.
+    #[serde(default = "default_true")]
+    pub dav_endpoints: bool,
+}
+
+impl Default for DiscoveryProbeConfig {
+    fn default() -> Self {
+        Self {
+            api_endpoints: default_true(),
+            dav_endpoints: default_true(),
         }
     }
 }

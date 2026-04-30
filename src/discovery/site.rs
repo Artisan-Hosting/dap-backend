@@ -6,6 +6,7 @@ use anyhow::Result;
 use serde_json::json;
 use tracing::{debug, info};
 
+use crate::config::DiscoveryProbeConfig;
 use crate::facts::Fact;
 
 use super::{
@@ -31,7 +32,12 @@ pub(super) struct HostInspection {
     pub(super) dead_host: Option<DeadHost>,
 }
 
-pub(super) fn inspect_host(host: &str, apex: &str, zone_dump: &ZoneDump) -> Result<HostInspection> {
+pub(super) fn inspect_host(
+    host: &str,
+    apex: &str,
+    zone_dump: &ZoneDump,
+    probes: &DiscoveryProbeConfig,
+) -> Result<HostInspection> {
     debug!(target = %apex, host = %host, "starting host inspection");
     let mut facts = Vec::new();
     let mut new_hosts = BTreeSet::new();
@@ -110,7 +116,7 @@ pub(super) fn inspect_host(host: &str, apex: &str, zone_dump: &ZoneDump) -> Resu
             new_hosts.extend(surface_hosts);
             site_profile = classify_site(host, &observed, surface_signals);
 
-            if surface::should_probe_dav_endpoints(site_profile.as_ref()) {
+            if surface::should_probe_dav_endpoints(site_profile.as_ref(), probes.dav_endpoints) {
                 info!(
                     target = %apex,
                     host = %host,
@@ -134,7 +140,11 @@ pub(super) fn inspect_host(host: &str, apex: &str, zone_dump: &ZoneDump) -> Resu
             }
 
             if let Some(reason) = surface::detect_surface_failure(&observed) {
-                if surface::should_probe_api_endpoints(&reason, site_profile.as_ref()) {
+                if surface::should_probe_api_endpoints(
+                    &reason,
+                    site_profile.as_ref(),
+                    probes.api_endpoints,
+                ) {
                     info!(
                         target = %apex,
                         host = %host,

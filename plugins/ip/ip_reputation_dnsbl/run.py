@@ -6,7 +6,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import sys
-from typing import Dict, Tuple
+from typing import Dict
 
 try:
     import dns.resolver
@@ -21,6 +21,8 @@ except ImportError as exc:  # pragma: no cover
         "notes": f"Missing dependency: {exc}",
     }))
 
+from shared.plugin_context import resolve_entity_values
+
 DNSBLS = [
     ("Spamhaus ZEN", "zen.spamhaus.org"),
     ("Spamcop", "bl.spamcop.net"),
@@ -34,18 +36,6 @@ DNSBLS = [
 def load_input() -> Dict:
     raw = sys.stdin.read().strip()
     return json.loads(raw) if raw else {}
-
-
-def resolve_context(payload: Dict) -> Tuple[str, str]:
-    host = payload.get("target", "")
-    ip = ""
-    for fact in payload.get("facts", []):
-        if fact.get("entity") == "ip_address":
-            attrs = fact.get("attrs", {})
-            host = attrs.get("host", host)
-            ip = attrs.get("ip", ip)
-            break
-    return host or payload.get("target", ""), ip
 
 
 def reverse_ipv4(ip: str) -> str:
@@ -74,8 +64,8 @@ def dnsbl_listings(ip: str) -> list[dict]:
 
 def main() -> None:
     payload = load_input()
-    host, ip = resolve_context(payload)
-    if not ip:
+    host, ips = resolve_entity_values(payload, "ip_address", "ip")
+    if not ips:
         json.dump({
             "test_id": "ip_reputation_dnsbl",
             "target": payload.get("target", ""),
@@ -83,44 +73,69 @@ def main() -> None:
             "severity": "informational",
             "evidence": {},
             "recommendations": ["Ensure discovery produced ip_address facts"],
-            "notes": "Unable to determine IP for DNSBL check",
+            "notes": "Unable to determine any IPs for DNSBL check",
         }, sys.stdout)
         return
 
     try:
-        addr = ipaddress.ip_address(ip)
-        if addr.version != 4:
+        observations = []
+        listed_any = False
+        checked_ipv4 = False
+        for ip in ips:
+            addr = ipaddress.ip_address(ip)
+            if addr.version != 4:
+                observations.append({
+                    "ip": ip,
+                    "family": "ipv6",
+                    "status": "skipped",
+                    "notes": "DNSBL checks are currently limited to IPv4",
+                })
+                continue
+
+            checked_ipv4 = True
+            listed = dnsbl_listings(ip)
+            listed_any = listed_any or bool(listed)
+            observations.append({
+                "ip": ip,
+                "family": "ipv4",
+                "listed": listed,
+                "checked_lists": [label for label, _ in DNSBLS],
+            })
+
+        if not checked_ipv4:
             json.dump({
                 "test_id": "ip_reputation_dnsbl",
-                "target": f"{host}|{ip}",
+                "target": host,
                 "status": "skipped",
                 "severity": "informational",
-                "evidence": {"ip": ip, "family": "ipv6"},
+                "evidence": {
+                    "host": host,
+                    "ips": ips,
+                    "observations": observations,
+                },
                 "recommendations": [],
                 "notes": "DNSBL checks are currently limited to IPv4",
             }, sys.stdout)
             return
 
-        listed = dnsbl_listings(ip)
-        status = "warn" if listed else "pass"
-        severity = "medium" if listed else "informational"
+        status = "warn" if listed_any else "pass"
+        severity = "medium" if listed_any else "informational"
         recommendations = []
-        if listed:
+        if listed_any:
             recommendations.extend([
-                "Review abuse or spam signals associated with the IP",
-                "Investigate whether the address should remain publicly exposed",
+                "Review abuse or spam signals associated with the IPs",
+                "Investigate whether any listed address should remain publicly exposed",
             ])
 
         json.dump({
             "test_id": "ip_reputation_dnsbl",
-            "target": f"{host}|{ip}",
+            "target": host,
             "status": status,
             "severity": severity,
             "evidence": {
                 "host": host,
-                "ip": ip,
-                "listed": listed,
-                "checked_lists": [label for label, _ in DNSBLS],
+                "ips": ips,
+                "observations": observations,
             },
             "recommendations": recommendations,
             "notes": None,
@@ -128,10 +143,10 @@ def main() -> None:
     except Exception as exc:
         json.dump({
             "test_id": "ip_reputation_dnsbl",
-            "target": f"{host}|{ip}",
+            "target": host,
             "status": "error",
             "severity": "informational",
-            "evidence": {"error": str(exc), "ip": ip},
+            "evidence": {"error": str(exc), "ips": ips},
             "recommendations": ["Verify DNS resolver access and retry"],
             "notes": "DNSBL lookup failed",
         }, sys.stdout)

@@ -26,6 +26,8 @@ except ImportError as exc:
         "notes": f"Missing dependency: {exc}",
     }))
 
+from shared.plugin_context import resolve_web_host
+
 HEADERS = {"User-Agent": "ArtisanPassiveAuditor/0.1 (+passive)"}
 HTTP_PATTERN = re.compile(r"http://[a-z0-9][^\"'<>\s]+", re.IGNORECASE)
 EXCLUDE = re.compile(r"(localhost|127\.0\.0\.1|::1)", re.IGNORECASE)
@@ -37,13 +39,7 @@ def load_input() -> Dict:
 
 
 def resolve_host(payload: Dict) -> str:
-    host = payload.get("target", "")
-    for fact in payload.get("facts", []):
-        if fact.get("entity") == "web_service":
-            attrs = fact.get("attrs", {})
-            host = attrs.get("host", host)
-            break
-    return host or payload.get("target", "")
+    return resolve_web_host(payload)
 
 
 def prepare_evidence_dir(payload: Dict, test_id: str) -> Optional[Path]:
