@@ -1,6 +1,6 @@
 //! Host inspection and profile classification.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, thread};
 
 use anyhow::Result;
 use serde_json::json;
@@ -10,18 +10,19 @@ use crate::config::DiscoveryProbeConfig;
 use crate::facts::Fact;
 
 use super::{
-    DeadHost, SiteProfile, canonical_host,
+    canonical_host,
     dns::{
-        HostLiveness, ZoneDump, check_host_liveness, query_address_records, query_cname_record,
-        query_dkim_records, query_mx_records, query_txt_records,
+        check_host_liveness, query_address_records, query_cname_record, query_dkim_records,
+        query_mx_records, query_txt_records, HostLiveness, ZoneDump,
     },
     surface::{self, SurfaceObservation},
     text::{
+        dedupe_signals, extract_signals, extract_surface_hosts, markers_to_signals,
         ANGULAR_MARKERS, GHOST_MARKERS, NEXTJS_MARKERS, REACT_MARKERS, SHOPIFY_MARKERS,
-        SQUARE_MARKERS, SQUARESPACE_MARKERS, SVELTEKIT_MARKERS, VITE_MARKERS, VUE_MARKERS,
-        WEEBLY_MARKERS, WIX_MARKERS, WORDPRESS_MARKERS, dedupe_signals, extract_signals,
-        extract_surface_hosts, markers_to_signals,
+        SQUARESPACE_MARKERS, SQUARE_MARKERS, SVELTEKIT_MARKERS, VITE_MARKERS, VUE_MARKERS,
+        WEEBLY_MARKERS, WIX_MARKERS, WORDPRESS_MARKERS,
     },
+    DeadHost, SiteProfile,
 };
 
 #[derive(Debug)]
@@ -603,10 +604,32 @@ pub(super) fn collect_domain_mail_facts(
     facts: &mut Vec<Fact>,
     site_profiles: &mut Vec<SiteProfile>,
 ) -> Result<Vec<String>> {
+    let (mx_records, spf_records, dmarc_records, dkim_records) = thread::scope(|scope| {
+        let mx = scope.spawn(|| query_mx_records(apex, zone_dump));
+        let spf = scope.spawn(|| query_txt_records(apex, zone_dump));
+        let dmarc_name = format!("_dmarc.{}", apex);
+        let dmarc = scope.spawn(move || query_txt_records(&dmarc_name, zone_dump));
+        let dkim = scope.spawn(|| query_dkim_records(apex, zone_dump));
+
+        let mx = mx
+            .join()
+            .map_err(|_| anyhow::anyhow!("mx lookup worker panicked"))??;
+        let spf = spf
+            .join()
+            .map_err(|_| anyhow::anyhow!("spf lookup worker panicked"))??;
+        let dmarc = dmarc
+            .join()
+            .map_err(|_| anyhow::anyhow!("dmarc lookup worker panicked"))??;
+        let dkim = dkim
+            .join()
+            .map_err(|_| anyhow::anyhow!("dkim lookup worker panicked"))??;
+        Ok::<_, anyhow::Error>((mx, spf, dmarc, dkim))
+    })?;
+
     let mut mx_hosts = Vec::new();
     let mut signals = Vec::new();
 
-    for mx in query_mx_records(apex, zone_dump)? {
+    for mx in mx_records {
         let mx_id = format!("dns:MX:{}:{}", apex, mx.exchange.replace('.', "_"));
         facts.push(Fact::with_attrs(
             apex,
@@ -633,7 +656,6 @@ pub(super) fn collect_domain_mail_facts(
         signals.push(format!("mx-provider:{provider_name}"));
     }
 
-    let spf_records = query_txt_records(apex, zone_dump)?;
     for spf in spf_records
         .iter()
         .filter(|entry| entry.to_lowercase().starts_with("v=spf1"))
@@ -652,7 +674,7 @@ pub(super) fn collect_domain_mail_facts(
     }
 
     let dmarc_name = format!("_dmarc.{}", apex);
-    for dmarc in query_txt_records(&dmarc_name, zone_dump)? {
+    for dmarc in dmarc_records {
         let lower = dmarc.to_lowercase();
         if lower.starts_with("v=dmarc1") {
             facts.push(Fact::with_attrs(
@@ -669,7 +691,7 @@ pub(super) fn collect_domain_mail_facts(
         }
     }
 
-    for (selector, record) in query_dkim_records(apex, zone_dump)? {
+    for (selector, record) in dkim_records {
         facts.push(Fact::with_attrs(
             apex,
             "dns_record",

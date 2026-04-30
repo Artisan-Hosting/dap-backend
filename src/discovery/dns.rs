@@ -6,6 +6,7 @@ use std::{
     net::{IpAddr, ToSocketAddrs},
     path::PathBuf,
     process::Command,
+    thread,
     time::Instant,
 };
 
@@ -37,15 +38,28 @@ pub(super) fn query_txt_records(name: &str, zone_dump: &ZoneDump) -> Result<Vec<
 }
 
 pub(super) fn query_mx_records(name: &str, zone_dump: &ZoneDump) -> Result<Vec<MxRecord>> {
+    let (dig, host) = thread::scope(|scope| {
+        let dig = scope.spawn(|| dig_short(name, Some("MX")));
+        let host = scope.spawn(|| host_short(name, "MX"));
+
+        let dig = dig
+            .join()
+            .map_err(|_| anyhow::anyhow!("dig MX worker panicked"))??;
+        let host = host
+            .join()
+            .map_err(|_| anyhow::anyhow!("host MX worker panicked"))??;
+        Ok::<_, anyhow::Error>((dig, host))
+    })?;
+
     let mut records = Vec::new();
-    for raw in dig_short(name, Some("MX"))? {
+    for raw in dig {
         if let Some(record) = parse_mx_record(&raw) {
             records.push(record);
         }
     }
 
     if records.is_empty() {
-        for raw in host_short(name, "MX")? {
+        for raw in host {
             if let Some(record) = parse_mx_record(&raw) {
                 records.push(record);
             }
@@ -69,11 +83,30 @@ pub(super) fn query_dkim_records(
     name: &str,
     zone_dump: &ZoneDump,
 ) -> Result<Vec<(String, String)>> {
+    let selector_results = thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for selector in COMMON_DKIM_SELECTORS {
+            let record_name = format!("{}._domainkey.{}", selector, name);
+            handles.push(scope.spawn(move || {
+                let values = query_txt_records(&record_name, zone_dump).unwrap_or_default();
+                (selector.to_string(), values)
+            }));
+        }
+
+        let mut results = Vec::new();
+        for handle in handles {
+            let (selector, values) = handle
+                .join()
+                .map_err(|_| anyhow::anyhow!("dkim selector worker panicked"))?;
+            results.push((selector, values));
+        }
+        Ok::<_, anyhow::Error>(results)
+    })?;
+
     let mut records = Vec::new();
-    for selector in COMMON_DKIM_SELECTORS {
-        let record_name = format!("{}._domainkey.{}", selector, name);
-        for value in query_txt_records(&record_name, zone_dump)? {
-            records.push((selector.to_string(), value));
+    for (selector, values) in selector_results {
+        for value in values {
+            records.push((selector.clone(), value));
         }
     }
     Ok(records)
@@ -95,9 +128,21 @@ pub(super) fn query_cname_record(name: &str, zone_dump: &ZoneDump) -> Result<Opt
 }
 
 pub(super) fn query_address_records(name: &str, zone_dump: &ZoneDump) -> Result<Vec<String>> {
+    let (a_records, aaaa_records) = thread::scope(|scope| {
+        let a = scope.spawn(|| dig_short(name, Some("A")));
+        let aaaa = scope.spawn(|| dig_short(name, Some("AAAA")));
+        let a = a
+            .join()
+            .map_err(|_| anyhow::anyhow!("A record worker panicked"))??;
+        let aaaa = aaaa
+            .join()
+            .map_err(|_| anyhow::anyhow!("AAAA record worker panicked"))??;
+        Ok::<_, anyhow::Error>((a, aaaa))
+    })?;
+
     let mut addresses = Vec::new();
-    addresses.extend(dig_short(name, Some("A"))?);
-    addresses.extend(dig_short(name, Some("AAAA"))?);
+    addresses.extend(a_records);
+    addresses.extend(aaaa_records);
     let addresses = normalize_ip_addresses(addresses);
     if !addresses.is_empty() {
         return Ok(addresses);
@@ -125,35 +170,45 @@ pub(super) enum HostLiveness {
 
 pub(super) fn check_host_liveness(host: &str) -> HostLiveness {
     debug!(host = %host, "starting host liveness probe");
+    let (https, http, ping) = thread::scope(|scope| {
+        let https = scope.spawn(|| probe_https(host));
+        let http = scope.spawn(|| probe_http(host));
+        let ping = scope.spawn(|| probe_ping(host));
+
+        let https = https
+            .join()
+            .map_err(|_| anyhow::anyhow!("https probe worker panicked"))?;
+        let http = http
+            .join()
+            .map_err(|_| anyhow::anyhow!("http probe worker panicked"))?;
+        let ping = ping
+            .join()
+            .map_err(|_| anyhow::anyhow!("ping probe worker panicked"))?;
+        Ok::<_, anyhow::Error>((https, http, ping))
+    })
+    .map(|(https, http, ping)| (https, http, ping))
+    .unwrap_or_else(|err| {
+        debug!(host = %host, error = %err, "liveness probe worker failed");
+        (
+            ProbeResult::Failure(err.to_string()),
+            ProbeResult::Failure(err.to_string()),
+            ProbeResult::Failure(err.to_string()),
+        )
+    });
+
     let mut reasons = Vec::new();
-
-    match probe_https(host) {
-        ProbeResult::Success => {
-            debug!(host = %host, scheme = "https", "liveness probe succeeded");
-            return HostLiveness::Alive;
-        }
-        ProbeResult::Failure(reason) => reasons.push(reason),
-    }
-
-    match probe_http(host) {
-        ProbeResult::Success => {
-            debug!(host = %host, scheme = "http", "liveness probe succeeded");
-            return HostLiveness::Alive;
-        }
-        ProbeResult::Failure(reason) => reasons.push(reason),
-    }
-
-    match probe_ping(host) {
-        ProbeResult::Success => {
-            debug!(host = %host, probe = "ping", "liveness probe succeeded");
-            HostLiveness::Alive
-        }
-        ProbeResult::Failure(reason) => {
-            reasons.push(reason);
-            debug!(host = %host, reason = %reasons.join(" | "), "host classified as dead");
-            HostLiveness::Dead(reasons.join(" | "))
+    for (scheme, result) in [("https", https), ("http", http), ("ping", ping)] {
+        match result {
+            ProbeResult::Success => {
+                debug!(host = %host, probe = scheme, "liveness probe succeeded");
+                return HostLiveness::Alive;
+            }
+            ProbeResult::Failure(reason) => reasons.push(reason),
         }
     }
+
+    debug!(host = %host, reason = %reasons.join(" | "), "host classified as dead");
+    HostLiveness::Dead(reasons.join(" | "))
 }
 
 pub(super) fn query_dns_wildcard(domain: &str) -> Vec<String> {

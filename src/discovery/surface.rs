@@ -2,19 +2,21 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs,
     process::Command,
+    thread,
     time::Instant,
 };
 
 use anyhow::{Context, Result};
 use tracing::debug;
 
-use super::{SiteProfile, dedupe_signals};
+use super::{dedupe_signals, SiteProfile};
 
-const FETCH_HEADERS_MAX_TIME_SECS: u64 = 1;
-const FETCH_HEADERS_CONNECT_TIMEOUT_SECS: u64 = 3;
-const FETCH_BODY_MAX_TIME_SECS: u64 = 1;
-const FETCH_BODY_CONNECT_TIMEOUT_SECS: u64 = 3;
+const FETCH_HEADERS_MAX_TIME_SECS: u64 = 5;
+const FETCH_HEADERS_CONNECT_TIMEOUT_SECS: u64 = 10;
+const FETCH_BODY_MAX_TIME_SECS: u64 = 5;
+const FETCH_BODY_CONNECT_TIMEOUT_SECS: u64 = 10;
 
 /// Low-risk API endpoints to try when a host looks alive but the root body is empty.
 pub(super) const API_ENDPOINT_PROBES: &[&str] = &[
@@ -98,6 +100,15 @@ struct HeaderFetch {
     raw: String,
     status_code: Option<u16>,
     headers: BTreeMap<String, String>,
+}
+
+#[derive(Debug)]
+struct EndpointProbeObservation {
+    endpoint: &'static str,
+    status_code: u16,
+    content_type: Option<String>,
+    headers_raw: String,
+    body: Option<String>,
 }
 
 #[derive(Debug)]
@@ -375,62 +386,33 @@ pub(super) fn probe_api_endpoints(
         endpoint_count = API_ENDPOINT_PROBES.len(),
         "starting api endpoint probing"
     );
-    for endpoint in API_ENDPOINT_PROBES {
-        debug!(
-            target = %apex,
-            host = %host,
-            scheme = %scheme,
-            endpoint = *endpoint,
-            "probing api endpoint headers"
-        );
-        let headers = fetch_headers(host, scheme, endpoint)?;
-        let Some(status_code) = headers.status_code else {
-            debug!(
-                target = %apex,
-                host = %host,
-                endpoint = *endpoint,
-                "api endpoint returned no status code"
-            );
-            continue;
-        };
-
-        if !is_api_endpoint_status(status_code) {
-            debug!(
-                target = %apex,
-                host = %host,
-                endpoint = *endpoint,
-                status_code = status_code,
-                "api endpoint skipped by status filter"
-            );
-            continue;
-        }
-
-        debug!(
-            target = %apex,
-            host = %host,
-            endpoint = *endpoint,
-            status_code = status_code,
-            "api endpoint matched status filter"
-        );
-        let body = fetch_body(host, scheme, endpoint)?;
+    let observations = probe_endpoint_batch(
+        host,
+        scheme,
+        apex,
+        API_ENDPOINT_PROBES,
+        is_api_endpoint_status,
+        "api",
+    )?;
+    for observation in observations {
         let mut signals = vec![
             "api-endpoint".to_string(),
-            format!("endpoint:{endpoint}"),
-            format!("status:{status_code}"),
+            format!("endpoint:{}", observation.endpoint),
+            format!("status:{}", observation.status_code),
         ];
         let mut new_hosts = BTreeSet::new();
 
-        if let Some(content_type) = headers.headers.get("content-type") {
+        if let Some(content_type) = observation.content_type.as_ref() {
             signals.push(format!("content-type:{}", content_type.to_lowercase()));
         }
 
-        for extracted in super::text::extract_surface_hosts(&headers.raw, apex) {
+        for extracted in super::text::extract_surface_hosts(&observation.headers_raw, apex) {
             if extracted != host && extracted != apex {
                 new_hosts.insert(extracted);
             }
         }
 
-        if let Some(ref body) = body {
+        if let Some(ref body) = observation.body {
             signals.extend(super::text::extract_signals(body));
             for extracted in super::text::extract_surface_hosts(body, apex) {
                 if extracted != host && extracted != apex {
@@ -442,19 +424,19 @@ pub(super) fn probe_api_endpoints(
         debug!(
             target = %apex,
             host = %host,
-            endpoint = *endpoint,
+            endpoint = observation.endpoint,
             discovered_hosts = new_hosts.len(),
             "api endpoint probe produced result"
         );
 
         return Ok(Some(ApiProbeResult {
-            endpoint: (*endpoint).to_string(),
-            status_code,
-            content_type: headers.headers.get("content-type").cloned(),
+            endpoint: observation.endpoint.to_string(),
+            status_code: observation.status_code,
+            content_type: observation.content_type,
             profile: SiteProfile {
                 host: host.to_string(),
                 kind: "api".to_string(),
-                provider: Some(endpoint.trim_start_matches('/').to_string()),
+                provider: Some(observation.endpoint.trim_start_matches('/').to_string()),
                 confidence: 0.9,
                 signals: super::dedupe_signals(signals),
             },
@@ -481,62 +463,33 @@ pub(super) fn probe_dav_endpoints(
         endpoint_count = DAV_ENDPOINT_PROBES.len(),
         "starting dav endpoint probing"
     );
-    for endpoint in DAV_ENDPOINT_PROBES {
-        debug!(
-            target = %apex,
-            host = %host,
-            scheme = %scheme,
-            endpoint = *endpoint,
-            "probing dav endpoint headers"
-        );
-        let headers = fetch_headers(host, scheme, endpoint)?;
-        let Some(status_code) = headers.status_code else {
-            debug!(
-                target = %apex,
-                host = %host,
-                endpoint = *endpoint,
-                "dav endpoint returned no status code"
-            );
-            continue;
-        };
-
-        if !is_dav_endpoint_status(status_code) {
-            debug!(
-                target = %apex,
-                host = %host,
-                endpoint = *endpoint,
-                status_code = status_code,
-                "dav endpoint skipped by status filter"
-            );
-            continue;
-        }
-
-        debug!(
-            target = %apex,
-            host = %host,
-            endpoint = *endpoint,
-            status_code = status_code,
-            "dav endpoint matched status filter"
-        );
-        let body = fetch_body(host, scheme, endpoint)?;
+    let observations = probe_endpoint_batch(
+        host,
+        scheme,
+        apex,
+        DAV_ENDPOINT_PROBES,
+        is_dav_endpoint_status,
+        "dav",
+    )?;
+    for observation in observations {
         let mut signals = vec![
             "dav-endpoint".to_string(),
-            format!("endpoint:{endpoint}"),
-            format!("status:{status_code}"),
+            format!("endpoint:{}", observation.endpoint),
+            format!("status:{}", observation.status_code),
         ];
         let mut new_hosts = BTreeSet::new();
 
-        if let Some(content_type) = headers.headers.get("content-type") {
+        if let Some(content_type) = observation.content_type.as_ref() {
             signals.push(format!("content-type:{}", content_type.to_lowercase()));
         }
 
-        for extracted in super::text::extract_surface_hosts(&headers.raw, apex) {
+        for extracted in super::text::extract_surface_hosts(&observation.headers_raw, apex) {
             if extracted != host && extracted != apex {
                 new_hosts.insert(extracted);
             }
         }
 
-        if let Some(ref body) = body {
+        if let Some(ref body) = observation.body {
             signals.extend(super::text::extract_signals(body));
             for extracted in super::text::extract_surface_hosts(body, apex) {
                 if extracted != host && extracted != apex {
@@ -545,19 +498,25 @@ pub(super) fn probe_dav_endpoints(
             }
         }
 
-        let profile = classify_dav_profile(host, endpoint, &headers.raw, body.as_deref(), signals);
+        let profile = classify_dav_profile(
+            host,
+            observation.endpoint,
+            &observation.headers_raw,
+            observation.body.as_deref(),
+            signals,
+        );
         debug!(
             target = %apex,
             host = %host,
-            endpoint = *endpoint,
+            endpoint = observation.endpoint,
             discovered_hosts = new_hosts.len(),
             "dav endpoint probe produced result"
         );
 
         return Ok(Some(DavProbeResult {
-            endpoint: (*endpoint).to_string(),
-            status_code,
-            content_type: headers.headers.get("content-type").cloned(),
+            endpoint: observation.endpoint.to_string(),
+            status_code: observation.status_code,
+            content_type: observation.content_type,
             profile,
             new_hosts,
         }));
@@ -568,6 +527,212 @@ pub(super) fn probe_dav_endpoints(
 
 pub(super) fn is_dav_endpoint_status(status_code: u16) -> bool {
     matches!(status_code, 200 | 301 | 302 | 307 | 308 | 401 | 403 | 405)
+}
+
+fn probe_endpoint_batch(
+    host: &str,
+    scheme: &str,
+    apex: &str,
+    endpoints: &[&'static str],
+    status_filter: fn(u16) -> bool,
+    probe_kind: &'static str,
+) -> Result<Vec<EndpointProbeObservation>> {
+    if endpoints.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let worker_count = probe_worker_count(endpoints.len());
+    let load_avg = system_load_average();
+    let mem_avail_kb = system_mem_available_kb();
+    let mem_total_kb = system_mem_total_kb();
+
+    debug!(
+        target = %apex,
+        host = %host,
+        scheme = %scheme,
+        probe_kind,
+        endpoint_count = endpoints.len(),
+        worker_count,
+        cpu_count = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
+        load_avg = ?load_avg,
+        mem_available_kb = ?mem_avail_kb,
+        mem_total_kb = ?mem_total_kb,
+        "sizing parallel probe batch"
+    );
+
+    let chunk_size = (endpoints.len() + worker_count - 1) / worker_count;
+    let mut handles = Vec::new();
+
+    for (chunk_index, chunk) in endpoints.chunks(chunk_size).enumerate() {
+        let host = host.to_string();
+        let scheme = scheme.to_string();
+        let apex = apex.to_string();
+        let chunk: Vec<(usize, &'static str)> = chunk
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(offset, endpoint)| (chunk_index * chunk_size + offset, endpoint))
+            .collect();
+
+        handles.push(thread::spawn(
+            move || -> Result<Vec<(usize, EndpointProbeObservation)>> {
+                let mut observations = Vec::new();
+                for (index, endpoint) in chunk {
+                    debug!(
+                        target = %apex,
+                        host = %host,
+                        scheme = %scheme,
+                        endpoint = endpoint,
+                        probe_kind,
+                        "probing endpoint headers"
+                    );
+                    let headers = fetch_headers(&host, &scheme, endpoint)?;
+                    let Some(status_code) = headers.status_code else {
+                        debug!(
+                            target = %apex,
+                            host = %host,
+                            endpoint = endpoint,
+                            probe_kind,
+                            "endpoint returned no status code"
+                        );
+                        continue;
+                    };
+
+                    if !status_filter(status_code) {
+                        debug!(
+                            target = %apex,
+                            host = %host,
+                            endpoint = endpoint,
+                            status_code = status_code,
+                            probe_kind,
+                            "endpoint skipped by status filter"
+                        );
+                        continue;
+                    }
+
+                    debug!(
+                        target = %apex,
+                        host = %host,
+                        endpoint = endpoint,
+                        status_code = status_code,
+                        probe_kind,
+                        "endpoint matched status filter"
+                    );
+                    let body = fetch_body(&host, &scheme, endpoint)?;
+                    observations.push((
+                        index,
+                        EndpointProbeObservation {
+                            endpoint,
+                            status_code,
+                            content_type: headers.headers.get("content-type").cloned(),
+                            headers_raw: headers.raw,
+                            body,
+                        },
+                    ));
+                }
+
+                Ok(observations)
+            },
+        ));
+    }
+
+    let mut ordered = std::iter::repeat_with(|| None)
+        .take(endpoints.len())
+        .collect::<Vec<Option<EndpointProbeObservation>>>();
+    for handle in handles {
+        let chunk_results = handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("{probe_kind} endpoint probe worker panicked"))??;
+        for (index, observation) in chunk_results {
+            ordered[index] = Some(observation);
+        }
+    }
+
+    Ok(ordered.into_iter().flatten().collect())
+}
+
+fn probe_worker_count(endpoint_count: usize) -> usize {
+    let cpu_count = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .max(1);
+    let load_avg = system_load_average().unwrap_or(0.0);
+    let mem_ratio = system_memory_headroom_ratio().unwrap_or(1.0);
+
+    probe_worker_count_from_system(endpoint_count, cpu_count, load_avg, mem_ratio)
+}
+
+fn probe_worker_count_from_system(
+    endpoint_count: usize,
+    cpu_count: usize,
+    load_avg: f64,
+    mem_ratio: f64,
+) -> usize {
+    let cpu_budget = if load_avg <= 0.0 {
+        cpu_count
+    } else {
+        ((cpu_count as f64) / load_avg.max(1.0)).ceil().max(1.0) as usize
+    };
+    let mem_budget = ((cpu_count as f64) * mem_ratio).ceil().max(1.0) as usize;
+
+    endpoint_count
+        .min(cpu_budget.max(1))
+        .min(mem_budget.max(1))
+        .max(1)
+}
+
+fn system_load_average() -> Option<f64> {
+    let raw = fs::read_to_string("/proc/loadavg").ok()?;
+    raw.split_whitespace().next()?.parse::<f64>().ok()
+}
+
+fn system_mem_available_kb() -> Option<u64> {
+    system_meminfo_value("MemAvailable")
+}
+
+fn system_mem_total_kb() -> Option<u64> {
+    system_meminfo_value("MemTotal")
+}
+
+fn system_memory_headroom_ratio() -> Option<f64> {
+    let available = system_mem_available_kb()?;
+    let total = system_mem_total_kb()?;
+    if total == 0 {
+        return None;
+    }
+    Some((available as f64 / total as f64).clamp(0.1, 1.0))
+}
+
+fn system_meminfo_value(key: &str) -> Option<u64> {
+    let raw = fs::read_to_string("/proc/meminfo").ok()?;
+    for line in raw.lines() {
+        let (name, rest) = line.split_once(':')?;
+        if name != key {
+            continue;
+        }
+        return rest
+            .split_whitespace()
+            .next()
+            .and_then(|value| value.parse::<u64>().ok());
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::probe_worker_count_from_system;
+
+    #[test]
+    fn probe_worker_count_scales_with_headroom() {
+        assert_eq!(probe_worker_count_from_system(100, 8, 0.5, 1.0), 8);
+        assert_eq!(probe_worker_count_from_system(100, 8, 2.0, 1.0), 4);
+        assert_eq!(probe_worker_count_from_system(100, 8, 16.0, 1.0), 1);
+    }
+
+    #[test]
+    fn probe_worker_count_caps_to_endpoint_count() {
+        assert_eq!(probe_worker_count_from_system(3, 8, 0.2, 1.0), 3);
+    }
 }
 
 fn classify_dav_profile(

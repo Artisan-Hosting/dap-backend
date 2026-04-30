@@ -1,6 +1,7 @@
 //! Certificate Transparency lookup helpers.
 
 use std::collections::BTreeSet;
+use std::env;
 use std::process::Command;
 
 use anyhow::{Context, Result};
@@ -55,29 +56,33 @@ pub(super) async fn query_ct_names(
         }
     }
 
-    match query_ct_postgres(domain).await {
-        Ok(Some(hosts)) => {
-            info!(
-                domain = %domain,
-                source = "crt.sh-postgres",
-                count = hosts.len(),
-                "discovered subdomains from crt.sh postgres database"
-            );
-            if ct_cache_ttl_seconds > 0 {
-                if let Some(storage) = storage {
-                    storage
-                        .upsert_ct_subdomain_cache(domain, "crt.sh-postgres", &hosts)
-                        .await?;
+    if crtsh_postgres_enabled() {
+        match query_ct_postgres(domain).await {
+            Ok(Some(hosts)) => {
+                info!(
+                    domain = %domain,
+                    source = "crt.sh-postgres",
+                    count = hosts.len(),
+                    "discovered subdomains from crt.sh postgres database"
+                );
+                if ct_cache_ttl_seconds > 0 {
+                    if let Some(storage) = storage {
+                        storage
+                            .upsert_ct_subdomain_cache(domain, "crt.sh-postgres", &hosts)
+                            .await?;
+                    }
                 }
+                return Ok(hosts);
             }
-            return Ok(hosts);
+            Ok(None) => {
+                warn!(domain = %domain, "crt.sh postgres database returned no hosts");
+            }
+            Err(err) => {
+                warn!(domain = %domain, error = ?err, "crt.sh postgres database query failed");
+            }
         }
-        Ok(None) => {
-            warn!(domain = %domain, "crt.sh postgres database returned no hosts");
-        }
-        Err(err) => {
-            warn!(domain = %domain, error = ?err, "crt.sh postgres database query failed");
-        }
+    } else {
+        debug!(domain = %domain, "skipping crt.sh postgres lookup; set ARTISAN_DAP_ENABLE_CRTSH_POSTGRES=1 to opt in");
     }
 
     let sources = [
@@ -104,8 +109,14 @@ pub(super) async fn query_ct_names(
         },
     ];
 
-    for source in sources {
-        match fetch_ct_source_async(source.name, &source.url).await {
+    let (crtsh_result, certspotter_result, google_result) = tokio::join!(
+        fetch_ct_source_async(sources[0].name, &sources[0].url),
+        fetch_ct_source_async(sources[1].name, &sources[1].url),
+        fetch_ct_source_async(sources[2].name, &sources[2].url),
+    );
+
+    for (source, result) in sources.iter().zip([crtsh_result, certspotter_result, google_result]) {
+        match result {
             Ok(Some(response)) => {
                 if !response.status_code.starts_with('2') {
                     warn!(
@@ -239,6 +250,13 @@ async fn query_ct_postgres(domain: &str) -> Result<Option<Vec<String>>> {
 
 fn escape_sql_literal(value: &str) -> String {
     value.replace('\'', "''")
+}
+
+fn crtsh_postgres_enabled() -> bool {
+    matches!(
+        env::var("ARTISAN_DAP_ENABLE_CRTSH_POSTGRES"),
+        Ok(value) if matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
+    )
 }
 
 pub(super) fn ct_cache_is_fresh(cache: &CtSubdomainCacheEntry, ttl_seconds: u64) -> bool {
