@@ -28,8 +28,9 @@ disabled_tests = ["web_api_fuzz"]
 worker_poll_interval_ms = 1000
 
 [engine.execution]
-max_workers = 9
-per_host_concurrency = 3
+max_concurrent_tests = 10
+max_workers = 48
+per_host_concurrency = 24
 
 [engine.report]
 formats = ["json"]

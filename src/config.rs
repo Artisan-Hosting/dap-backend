@@ -110,7 +110,10 @@ pub struct PsiConfig {
 /// Execution guardrails covering concurrency and rate limiting.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ExecutionConfig {
-    /// Maximum in-flight tasks across the backend worker.
+    /// Maximum in-flight tests across all active runs.
+    #[serde(default = "default_max_concurrent_tests")]
+    pub max_concurrent_tests: usize,
+    /// Maximum in-flight tests within a single run.
     #[serde(default = "default_max_workers")]
     pub max_workers: usize,
     /// Per-host concurrency controls to avoid hammering a single domain.
@@ -121,6 +124,7 @@ pub struct ExecutionConfig {
 impl Default for ExecutionConfig {
     fn default() -> Self {
         Self {
+            max_concurrent_tests: default_max_concurrent_tests(),
             max_workers: default_max_workers(),
             per_host_concurrency: default_per_host_concurrency(),
         }
@@ -196,6 +200,10 @@ fn default_max_workers() -> usize {
     8
 }
 
+fn default_max_concurrent_tests() -> usize {
+    10
+}
+
 fn default_per_host_concurrency() -> usize {
     2
 }
@@ -210,4 +218,14 @@ fn default_discovery_max_passes() -> usize {
 
 fn default_discovery_pass_backoff_ms() -> u64 {
     2000
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ExecutionConfig;
+
+    #[test]
+    fn execution_config_defaults_cap_total_concurrent_tests() {
+        assert_eq!(ExecutionConfig::default().max_concurrent_tests, 10);
+    }
 }

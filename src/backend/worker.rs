@@ -86,39 +86,73 @@ impl RunPaths {
 }
 
 pub async fn run_loop(state: Arc<AppState>) -> Result<()> {
+    let active_run_limit = state.config.engine.execution.max_concurrent_tests.max(1);
+    let shared_test_budget = Arc::new(Semaphore::new(active_run_limit));
+    let mut active_runs = JoinSet::new();
+    let mut active_run_count = 0usize;
+    let mut accepting_runs = true;
+
     loop {
-        if state.shutdown.is_triggered() {
-            info!("worker exiting cleanly after shutdown request");
-            return Ok(());
+        if accepting_runs && state.shutdown.is_triggered() {
+            accepting_runs = false;
+            info!("worker received shutdown request; draining active runs");
         }
 
-        match state.storage.claim_next_run().await {
-            Ok(Some(run)) => {
-                if let Err(err) = process_run(state.clone(), run).await {
-                    error!(error = %err, "run processing failed");
+        while accepting_runs && active_run_count < active_run_limit {
+            match state.storage.claim_next_run().await {
+                Ok(Some(run)) => {
+                    let state = state.clone();
+                    let shared_test_budget = shared_test_budget.clone();
+                    active_runs
+                        .spawn(async move { process_run(state, run, shared_test_budget).await });
+                    active_run_count += 1;
                 }
-            }
-            Ok(None) => {
-                tokio::select! {
-                    _ = state.shutdown.notified() => {
-                        info!("worker exiting cleanly after shutdown request");
-                        return Ok(());
-                    }
-                    _ = sleep(Duration::from_millis(state.config.engine.worker_poll_interval_ms)) => {}
+                Ok(None) => {
+                    break;
                 }
-            }
-            Err(err) => {
-                error!(error = %err, "worker queue poll failed");
-                sleep(Duration::from_millis(
-                    state.config.engine.worker_poll_interval_ms,
-                ))
-                .await;
+                Err(err) => {
+                    error!(error = %err, "worker queue claim failed");
+                    break;
+                }
             }
         }
+
+        if active_run_count == 0 {
+            if !accepting_runs {
+                info!("worker exiting cleanly after shutdown request");
+                return Ok(());
+            }
+
+            tokio::select! {
+                _ = state.shutdown.notified() => {
+                    accepting_runs = false;
+                }
+                _ = sleep(Duration::from_millis(state.config.engine.worker_poll_interval_ms)) => {}
+            }
+
+            continue;
+        }
+
+        match active_runs.join_next().await {
+            Some(Ok(Ok(()))) => {}
+            Some(Ok(Err(err))) => {
+                error!(error = %err, "run processing failed");
+            }
+            Some(Err(err)) => {
+                error!(error = %err, "run processing task failed to join");
+            }
+            None => {}
+        }
+
+        active_run_count = active_run_count.saturating_sub(1);
     }
 }
 
-async fn process_run(state: Arc<AppState>, run: crate::backend::storage::QueuedRun) -> Result<()> {
+async fn process_run(
+    state: Arc<AppState>,
+    run: crate::backend::storage::QueuedRun,
+    shared_test_budget: Arc<Semaphore>,
+) -> Result<()> {
     if state.shutdown.is_triggered() {
         info!(run_id = %run.run_id, "shutdown requested; finishing current run before exit");
     }
@@ -285,6 +319,7 @@ async fn process_run(state: Arc<AppState>, run: crate::backend::storage::QueuedR
                 &run_paths,
                 main_tests,
                 &discovery.dead_hosts,
+                shared_test_budget.clone(),
             )
             .await?;
         }
@@ -310,6 +345,7 @@ async fn process_run(state: Arc<AppState>, run: crate::backend::storage::QueuedR
                 &run_paths,
                 api_tests,
                 &discovery.dead_hosts,
+                shared_test_budget.clone(),
             )
             .await?;
             info!(run_id = %run.run_id, "completed deferred api fuzz phase");
@@ -353,10 +389,11 @@ async fn execute_planned_tests_phase(
     run_paths: &RunPaths,
     planned_tests: Vec<RuntimePlannedTest>,
     dead_hosts: &[crate::discovery::DeadHost],
+    shared_test_budget: Arc<Semaphore>,
 ) -> Result<()> {
-    let global_limit = state.config.engine.execution.max_workers.max(1);
+    let run_limit = state.config.engine.execution.max_workers.max(1);
     let per_host_limit = state.config.engine.execution.per_host_concurrency.max(1);
-    let global = Arc::new(Semaphore::new(global_limit));
+    let run_budget = Arc::new(Semaphore::new(run_limit));
     let host_limits: Arc<Mutex<HashMap<String, Arc<Semaphore>>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let dead_map: Arc<BTreeMap<String, String>> = Arc::new(
@@ -378,12 +415,14 @@ async fn execute_planned_tests_phase(
         let state = state.clone();
         let run_id = run.run_id.clone();
         let run_paths = run_paths.clone();
-        let global = global.clone();
+        let run_budget = run_budget.clone();
+        let shared_test_budget = shared_test_budget.clone();
         let host_limits = host_limits.clone();
         let dead_map = dead_map.clone();
 
         join_set.spawn(async move {
-            let _global_guard = global.acquire_owned().await?;
+            let _run_guard = run_budget.acquire_owned().await?;
+            let _global_guard = shared_test_budget.acquire_owned().await?;
             let host_key = planned.execution_target.to_lowercase();
             let host_sem = host_semaphore(&host_limits, &host_key, per_host_limit).await;
             let _host_guard = host_sem.acquire_owned().await?;
