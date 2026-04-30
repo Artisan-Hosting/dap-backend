@@ -242,13 +242,3 @@ fn default_discovery_max_passes() -> usize {
 fn default_discovery_pass_backoff_ms() -> u64 {
     2000
 }
-
-#[cfg(test)]
-mod tests {
-    use super::ExecutionConfig;
-
-    #[test]
-    fn execution_config_defaults_cap_total_concurrent_tests() {
-        assert_eq!(ExecutionConfig::default().max_concurrent_tests, 10);
-    }
-}

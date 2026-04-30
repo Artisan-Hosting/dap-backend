@@ -165,7 +165,9 @@ async fn process_run(
     .await?;
 
     let process_result = async {
-        let run_config = state.config.audit_config_for_target(&run.target_key);
+        let run_config = state
+            .config
+            .audit_config_for_target(&run.target_key, &run.requested_tests);
         let discovery = perform_discovery_with_ct_cache(
             &run_config,
             &state.storage,
@@ -197,13 +199,25 @@ async fn process_run(
             );
 
             for requested_test in &run.requested_tests {
+                let state_value =
+                    if crate::backend::capabilities::is_internal_discovery_probe(requested_test) {
+                        RequestedTestState::Accepted
+                    } else {
+                        RequestedTestState::RejectedNotApplicable
+                    };
+                let state_reason =
+                    if crate::backend::capabilities::is_internal_discovery_probe(requested_test) {
+                        None
+                    } else {
+                        Some(reason.as_str())
+                    };
                 state
                     .storage
                     .set_requested_test_outcome(
                         &run.run_id,
                         requested_test,
-                        RequestedTestState::RejectedNotApplicable,
-                        Some(&reason),
+                        state_value,
+                        state_reason,
                     )
                     .await?;
             }
@@ -222,8 +236,12 @@ async fn process_run(
             .set_run_state(&run.run_id, RunState::Planning)
             .await?;
 
-        let requested_lookup: std::collections::BTreeSet<String> =
-            run.requested_tests.iter().cloned().collect();
+        let requested_lookup: std::collections::BTreeSet<String> = run
+            .requested_tests
+            .iter()
+            .filter(|test_id| !crate::backend::capabilities::is_internal_discovery_probe(test_id))
+            .cloned()
+            .collect();
         let mut applicable_counts: BTreeMap<String, usize> = BTreeMap::new();
         let mut runtime_tests = Vec::new();
 
@@ -250,7 +268,17 @@ async fn process_run(
         }
 
         for requested_test in &run.requested_tests {
-            if applicable_counts.contains_key(requested_test) {
+            if crate::backend::capabilities::is_internal_discovery_probe(requested_test) {
+                state
+                    .storage
+                    .set_requested_test_outcome(
+                        &run.run_id,
+                        requested_test,
+                        RequestedTestState::Accepted,
+                        None,
+                    )
+                    .await?;
+            } else if applicable_counts.contains_key(requested_test) {
                 state
                     .storage
                     .set_requested_test_outcome(
@@ -717,7 +745,7 @@ async fn host_semaphore(
         .clone()
 }
 
-fn derive_execution_target(facts: &[crate::facts::Fact], fallback: &str) -> String {
+pub(crate) fn derive_execution_target(facts: &[crate::facts::Fact], fallback: &str) -> String {
     facts
         .first()
         .map(|fact| fact.target.clone())

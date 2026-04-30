@@ -171,14 +171,3 @@ impl PlannedTest {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::runs_in_late_phase;
-
-    #[test]
-    fn web_api_fuzz_is_deferred() {
-        assert!(runs_in_late_phase("web_api_fuzz"));
-        assert!(!runs_in_late_phase("web_hsts"));
-    }
-}

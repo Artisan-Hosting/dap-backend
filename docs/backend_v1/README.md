@@ -8,7 +8,7 @@ Files:
 - `api_contracts.md`: HTTP endpoints, request bodies, and response shapes.
 - `database_schema.md`: MySQL tables, relationships, and stored state.
 - `report_contract.md`: canonical `report.json` payload emitted for completed runs.
-- `implementation_choices.md`: backend-specific choices made where `backend_v1.md` left room for implementation details.
+- `implementation_choices.md`: backend-specific choices and tradeoffs for the current backend implementation.
 
 Code mapping:
 
@@ -23,4 +23,4 @@ Code mapping:
 Notes:
 
 - `GET /v1/tests` includes both normal plugin-backed tests and internal discovery capabilities when configured.
-- `discovery_api_probe` and `discovery_dav_probe` are internal toggles that gate extra discovery-time probing; they are intentionally not normal plugin jobs.
+- `discovery_api_probe` and `discovery_dav_probe` are internal toggles that gate extra discovery-time probing; they are intentionally not normal plugin jobs and only apply when the client explicitly includes them in `requested_tests`.

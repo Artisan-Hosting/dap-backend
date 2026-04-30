@@ -26,13 +26,12 @@ use crate::{planner::RulesEngine, plugins::PluginCatalog, python_env, runner::Ru
 
 use self::{
     capabilities::CapabilityRegistry,
-    config::BackendConfig,
     contracts::{
         CreateRunRequest, CreateRunResponse, ErrorResponse, RunState, SupportedTestsResponse,
     },
 };
 
-pub use config::StorageConfig;
+pub use config::{BackendConfig, StorageConfig};
 pub use storage::{CtSubdomainCacheEntry, Storage};
 
 #[derive(Debug)]
@@ -248,7 +247,7 @@ async fn create_run(
     let target = normalize_target(&payload.target)?;
 
     let requested_tests = if payload.requested_tests.is_empty() {
-        state.capabilities.supported_test_ids()
+        state.capabilities.default_requested_test_ids()
     } else {
         dedupe_tests(&payload.requested_tests)
     };
@@ -262,7 +261,7 @@ async fn create_run(
 
     let unsupported_tests: Vec<String> = requested_tests
         .iter()
-        .filter(|test_id| !state.capabilities.contains(test_id))
+        .filter(|test_id| !state.capabilities.supports_selection(test_id))
         .cloned()
         .collect();
     if !unsupported_tests.is_empty() {
@@ -564,33 +563,54 @@ async fn shutdown_signal(shutdown: Arc<ShutdownState>) {
     shutdown.trigger();
 }
 
-#[cfg(test)]
-mod tests {
+#[doc(hidden)]
+pub mod test_support {
+    use std::collections::BTreeMap;
+
     use axum::http::StatusCode;
+
+    use crate::{backend::config::BackendConfig, facts::Fact, plugins::PluginCatalog};
 
     use super::{dedupe_tests, normalize_target};
 
-    #[test]
-    fn normalizes_valid_targets() {
-        let target =
-            normalize_target(" API.ArtisanHosting.Net. ").expect("target should normalize");
-        assert_eq!(target.input, "API.ArtisanHosting.Net");
-        assert_eq!(target.key, "api.artisanhosting.net");
+    pub fn normalize_target_parts(raw: &str) -> Result<(String, String), StatusCode> {
+        normalize_target(raw)
+            .map(|target| (target.input, target.key))
+            .map_err(|err| err.status)
     }
 
-    #[test]
-    fn rejects_url_targets() {
-        let err = normalize_target("https://artisanhosting.net/path").expect_err("url must fail");
-        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+    pub fn dedupe_test_ids(raw: &[String]) -> Vec<String> {
+        dedupe_tests(raw)
     }
 
-    #[test]
-    fn dedupes_requested_tests_preserving_order() {
-        let tests = dedupe_tests(&[
-            "web_hsts".to_string(),
-            " web_hsts ".to_string(),
-            "dns_dmarc_policy".to_string(),
-        ]);
-        assert_eq!(tests, vec!["web_hsts", "dns_dmarc_policy"]);
+    pub fn capability_registry_ids(config: &BackendConfig) -> (Vec<String>, Vec<String>) {
+        let catalog = PluginCatalog {
+            root: ".".into(),
+            manifests: BTreeMap::new(),
+        };
+        let registry = super::capabilities::CapabilityRegistry::build(&catalog, config);
+        (
+            registry
+                .supported_tests()
+                .into_iter()
+                .map(|test| test.id)
+                .collect(),
+            registry.default_requested_test_ids(),
+        )
+    }
+
+    pub fn storage_dedupe_strings(values: Vec<String>) -> Vec<String> {
+        super::storage::dedupe_strings(values)
+    }
+
+    pub fn storage_dedupe_entries(entries: &[(&'static str, i32)]) -> Vec<i32> {
+        super::storage::dedupe_by_key(entries, |entry| entry.0)
+            .into_iter()
+            .map(|entry| entry.1)
+            .collect()
+    }
+
+    pub fn derive_execution_target_for_test(facts: &[Fact], fallback: &str) -> String {
+        super::worker::derive_execution_target(facts, fallback)
     }
 }

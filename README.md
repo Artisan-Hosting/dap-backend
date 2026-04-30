@@ -1,7 +1,7 @@
 # Artisan Dynamic Auditing Platform Backend
 
 This repository is now a Rust backend service for the web application described
-in `backend_v1.md`.
+by the backend contract docs under `docs/backend_v1/`.
 
 ## Layout
 
@@ -22,7 +22,7 @@ in `backend_v1.md`.
 - `web_security_headers` — Inventories CSP/X-CTO/Referrer-Policy/etc. on the root document.
 - `web_seo_basics` — Checks title/meta/canonical/robots/sitemap hygiene plus exposed default files.
 - `web_basic_surface` — Flags frontend dev leaks and server signature/version exposure on basic sites.
-- `discovery_api_probe` / `discovery_dav_probe` — Discovery-only capabilities surfaced in `GET /v1/tests` when enabled in `backend.toml`; they gate extra probing of ambiguous dead/zombie-looking hosts for API or DAV surfaces.
+- `discovery_api_probe` / `discovery_dav_probe` — Discovery-only capabilities surfaced in `GET /v1/tests` when enabled in `backend.toml`; they gate extra probing of ambiguous dead/zombie-looking hosts for API or DAV surfaces and only run when explicitly requested by the client.
 - `dns_dmarc_policy` — Parses DMARC/SPF/DKIM/TLS-RPT/MTA-STS/BIMI plus MTA-STS policy details for email posture.
 - `mail_server_probe` — Lightly probes public SMTP listener ports and EHLO capabilities on MX hosts.
 - `ip_reputation_dnsbl` — Checks resolved IPv4s against common DNS block lists.
@@ -68,7 +68,7 @@ curl -X POST http://127.0.0.1:3000/v1/runs \
 ### Python Plugin Dependencies
 
 On first startup the backend provisions a shared venv under `venvs/shared/` and installs `httpx`, `beautifulsoup4`, `dnspython`, `google-auth`, and `requests`. Ensure the host has outbound access to PyPI the first time you start the server. Export `PAGESPEED_API_KEY` or a PSI credentials env/file to expose `psi_web_performance` through `GET /v1/tests`.
-The internal discovery probe capabilities `discovery_api_probe` and `discovery_dav_probe` are also listed in `GET /v1/tests` when enabled in config; they are not normal plugin jobs and only affect whether discovery performs the extra API or DAV follow-up checks on weak hosts.
+The internal discovery probe capabilities `discovery_api_probe` and `discovery_dav_probe` are also listed in `GET /v1/tests` when enabled in config; they are not normal plugin jobs and only affect whether discovery performs the extra API or DAV follow-up checks on weak hosts. They are excluded from the default "run all supported tests" set and only take effect when the client includes them in `requested_tests`.
 
 At this stage the backend will:
 
@@ -86,7 +86,6 @@ At this stage the backend will:
 
 ## Contracts
 
-- Backend v1 draft: `backend_v1.md`
 - API/storage/report docs: `docs/backend_v1/`
 - OpenAPI spec: `docs/openapi.yaml`
 

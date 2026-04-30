@@ -1141,7 +1141,7 @@ fn ct_cache_entry_from_row(row: CtSubdomainCacheRow) -> Result<CtSubdomainCacheE
     })
 }
 
-fn dedupe_by_key<'a, T, K, F>(items: &'a [T], mut key_fn: F) -> Vec<&'a T>
+pub(crate) fn dedupe_by_key<'a, T, K, F>(items: &'a [T], mut key_fn: F) -> Vec<&'a T>
 where
     K: Ord,
     F: FnMut(&T) -> K,
@@ -1158,7 +1158,7 @@ where
     deduped
 }
 
-fn dedupe_strings(values: Vec<String>) -> Vec<String> {
+pub(crate) fn dedupe_strings(values: Vec<String>) -> Vec<String> {
     let mut seen = BTreeSet::new();
     values
         .into_iter()
@@ -1172,48 +1172,6 @@ pub struct CtSubdomainCacheEntry {
     pub source: String,
     pub subdomains: Vec<String>,
     pub updated_at: DateTime<Utc>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{dedupe_by_key, dedupe_strings};
-
-    #[derive(Debug)]
-    struct Entry {
-        key: &'static str,
-        value: i32,
-    }
-
-    #[test]
-    fn dedupe_by_key_preserves_first_item_for_each_key() {
-        let items = vec![
-            Entry { key: "a", value: 1 },
-            Entry { key: "a", value: 2 },
-            Entry { key: "b", value: 3 },
-            Entry { key: "c", value: 4 },
-            Entry { key: "b", value: 5 },
-        ];
-
-        let deduped = dedupe_by_key(&items, |entry| entry.key);
-        assert_eq!(deduped.len(), 3);
-        assert_eq!(deduped[0].value, 1);
-        assert_eq!(deduped[1].value, 3);
-        assert_eq!(deduped[2].value, 4);
-    }
-
-    #[test]
-    fn dedupe_strings_preserves_first_item_for_each_value() {
-        let deduped = dedupe_strings(vec![
-            "a.example.com".to_string(),
-            "a.example.com".to_string(),
-            "b.example.com".to_string(),
-        ]);
-
-        assert_eq!(
-            deduped,
-            vec!["a.example.com".to_string(), "b.example.com".to_string()]
-        );
-    }
 }
 
 fn build_result_counts(results: &[ResultView]) -> ResultStatusCounts {

@@ -8,6 +8,7 @@ use tracing::warn;
 
 use crate::{
     backend::{config::BackendConfig, contracts::SupportedTestView},
+    config::DiscoveryProbeConfig,
     plugins::{PluginCatalog, PluginRecord, PluginRuntime},
     runner::Runner,
 };
@@ -60,11 +61,11 @@ impl CapabilityRegistry {
         self.supported.values().cloned().collect()
     }
 
-    pub fn contains(&self, test_id: &str) -> bool {
-        self.requestable.contains_key(test_id)
+    pub fn supports_selection(&self, test_id: &str) -> bool {
+        self.supported.contains_key(test_id)
     }
 
-    pub fn supported_test_ids(&self) -> Vec<String> {
+    pub fn default_requested_test_ids(&self) -> Vec<String> {
         self.requestable.keys().cloned().collect()
     }
 
@@ -72,11 +73,29 @@ impl CapabilityRegistry {
         test_ids
             .iter()
             .filter_map(|id| {
-                self.requestable
+                self.supported
                     .get(id)
                     .map(|test| (id.as_str(), test.version.as_str()))
             })
             .collect()
+    }
+}
+
+pub(crate) fn is_internal_discovery_probe(test_id: &str) -> bool {
+    matches!(test_id, DISCOVERY_API_PROBE_ID | DISCOVERY_DAV_PROBE_ID)
+}
+
+pub(crate) fn requested_discovery_probes(
+    config: &BackendConfig,
+    requested_tests: &[String],
+) -> DiscoveryProbeConfig {
+    let requested: BTreeSet<&str> = requested_tests.iter().map(String::as_str).collect();
+
+    DiscoveryProbeConfig {
+        api_endpoints: config.engine.discovery_probes.api_endpoints
+            && requested.contains(DISCOVERY_API_PROBE_ID),
+        dav_endpoints: config.engine.discovery_probes.dav_endpoints
+            && requested.contains(DISCOVERY_DAV_PROBE_ID),
     }
 }
 
@@ -233,38 +252,5 @@ fn runtime_name(runtime: PluginRuntime) -> &'static str {
         PluginRuntime::Node => "node",
         PluginRuntime::Binary => "binary",
         PluginRuntime::Oci => "oci",
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::BTreeSet;
-
-    use crate::{backend::config::BackendConfig, config::DiscoveryProbeConfig};
-
-    use super::{DISCOVERY_API_PROBE_ID, DISCOVERY_DAV_PROBE_ID, supported_internal_probe_tests};
-
-    #[test]
-    fn internal_probe_tests_follow_config_toggles() {
-        let mut config = BackendConfig::default();
-        config.engine.discovery_probes = DiscoveryProbeConfig {
-            api_endpoints: true,
-            dav_endpoints: true,
-        };
-
-        let enabled = BTreeSet::new();
-        let disabled = BTreeSet::new();
-        let tests = supported_internal_probe_tests(&config, &enabled, &disabled);
-        let ids: Vec<&str> = tests.iter().map(|test| test.id.as_str()).collect();
-
-        assert!(ids.contains(&DISCOVERY_API_PROBE_ID));
-        assert!(ids.contains(&DISCOVERY_DAV_PROBE_ID));
-
-        config.engine.discovery_probes = DiscoveryProbeConfig {
-            api_endpoints: false,
-            dav_endpoints: false,
-        };
-        let tests = supported_internal_probe_tests(&config, &enabled, &disabled);
-        assert!(tests.is_empty());
     }
 }

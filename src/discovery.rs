@@ -343,228 +343,125 @@ fn is_same_domain_or_subdomain(candidate: &str, apex: &str) -> bool {
     candidate == apex || candidate.ends_with(&format!(".{}", apex))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{SiteProfile, dedupe_strings};
-    use crate::backend::CtSubdomainCacheEntry;
+#[doc(hidden)]
+pub mod test_support {
+    use std::collections::BTreeSet;
+
     use chrono::{Duration, Utc};
 
-    use super::{
-        ct::ct_cache_is_fresh,
-        dns::{parse_host_cname_line, parse_host_mx_line, parse_host_txt_line},
-        site::{classify_site, infer_mail_provider},
-        surface::{
-            SurfaceObservation, detect_surface_failure, is_api_endpoint_status,
-            is_dav_endpoint_status, looks_like_website_body, should_probe_api_endpoints,
-            should_probe_dav_endpoints, surface_is_psi_eligible,
-        },
-        text::extract_surface_hosts,
-    };
-    use crate::config::DiscoveryProbeConfig;
+    use crate::{backend::CtSubdomainCacheEntry, config::RunConfig};
 
-    #[test]
-    fn detects_google_workspace_mx_provider() {
-        let provider = infer_mail_provider(&["aspmx.l.google.com".to_string()], "example.com");
-        assert_eq!(provider.as_deref(), Some("google-workspace"));
+    use super::{SiteProfile, ct, dns, site, surface, text::extract_surface_hosts};
+
+    #[derive(Debug, Default, Clone)]
+    pub struct SurfaceFixture {
+        pub scheme: String,
+        pub status_code: Option<u16>,
+        pub body: Option<String>,
+        pub content_type: Option<String>,
     }
 
-    #[test]
-    fn marks_blank_html_shell_as_zombie() {
-        let surface = SurfaceObservation {
-            scheme: "https".to_string(),
-            status_code: Some(200),
-            content_type: Some("text/html".to_string()),
-            body: Some("<html><body></body></html>".to_string()),
-            ..SurfaceObservation::default()
-        };
-
-        assert_eq!(
-            detect_surface_failure(&surface).as_deref(),
-            Some("zombie site: HTML shell without real page content")
-        );
-        assert!(!surface_is_psi_eligible(&surface));
+    fn to_surface_observation(fixture: SurfaceFixture) -> surface::SurfaceObservation {
+        surface::SurfaceObservation {
+            scheme: fixture.scheme,
+            status_code: fixture.status_code,
+            body: fixture.body,
+            content_type: fixture.content_type,
+            ..surface::SurfaceObservation::default()
+        }
     }
 
-    #[test]
-    fn html_app_shell_is_psi_eligible() {
-        let body = "<!doctype html><html><head><title>Site</title></head><body><div id=\"root\"></div><script src=\"/app.js\"></script></body></html>";
-        assert!(looks_like_website_body(body, "text/html; charset=utf-8"));
+    pub fn infer_mail_provider(mx_hosts: &[String], apex: &str) -> Option<String> {
+        site::infer_mail_provider(mx_hosts, apex)
     }
 
-    #[test]
-    fn json_api_body_is_not_psi_eligible() {
-        assert!(!looks_like_website_body(
-            "{\"status\":\"ok\"}",
-            "application/json"
-        ));
+    pub fn parse_host_txt_line(line: &str) -> Option<String> {
+        dns::parse_host_txt_line(line)
     }
 
-    #[test]
-    fn parses_host_txt_lines() {
-        assert_eq!(
-            parse_host_txt_line(
-                "_dmarc.example.com descriptive text \"v=DMARC1; p=quarantine;\\010rua=mailto:test@example.com\""
-            )
-            .as_deref(),
-            Some("v=dmarc1; p=quarantine; rua=mailto:test@example.com")
-        );
+    pub fn parse_host_mx_line(line: &str) -> Option<String> {
+        dns::parse_host_mx_line(line)
     }
 
-    #[test]
-    fn parses_host_mx_lines() {
-        assert_eq!(
-            parse_host_mx_line("example.com mail is handled by 10 mail.example.net.").as_deref(),
-            Some("10 mail.example.net")
-        );
+    pub fn parse_host_cname_line(line: &str) -> Option<String> {
+        dns::parse_host_cname_line(line)
     }
 
-    #[test]
-    fn parses_host_cname_lines() {
-        assert_eq!(
-            parse_host_cname_line("www.example.com is an alias for proxy.example.net.").as_deref(),
-            Some("proxy.example.net")
-        );
+    pub fn dedupe_strings(values: Vec<String>) -> Vec<String> {
+        super::dedupe_strings(values)
     }
 
-    #[test]
-    fn dedupes_strings_preserving_first_occurrence() {
-        assert_eq!(
-            dedupe_strings(vec![
-                "k2".to_string(),
-                "k2".to_string(),
-                "selector1".to_string(),
-                "k2".to_string(),
-            ]),
-            vec!["k2".to_string(), "selector1".to_string()]
-        );
-    }
-
-    #[test]
-    fn ct_cache_freshness_honors_ttl() {
+    pub fn ct_cache_is_fresh(ttl_seconds: u64, age_seconds: i64) -> bool {
         let cache = CtSubdomainCacheEntry {
             domain: "example.com".to_string(),
             source: "crt.sh".to_string(),
             subdomains: vec!["a.example.com".to_string()],
-            updated_at: Utc::now() - Duration::seconds(30),
+            updated_at: Utc::now() - Duration::seconds(age_seconds),
         };
-
-        assert!(ct_cache_is_fresh(&cache, 60));
-        assert!(!ct_cache_is_fresh(&cache, 10));
+        ct::ct_cache_is_fresh(&cache, ttl_seconds)
     }
 
-    #[test]
-    fn api_endpoint_status_hints_are_conservative() {
-        assert!(is_api_endpoint_status(200));
-        assert!(is_api_endpoint_status(401));
-        assert!(!is_api_endpoint_status(404));
-        assert!(!is_api_endpoint_status(500));
+    pub fn detect_surface_failure(fixture: SurfaceFixture) -> Option<String> {
+        surface::detect_surface_failure(&to_surface_observation(fixture))
     }
 
-    #[test]
-    fn dav_endpoint_status_hints_are_conservative() {
-        assert!(is_dav_endpoint_status(200));
-        assert!(is_dav_endpoint_status(401));
-        assert!(is_dav_endpoint_status(405));
-        assert!(!is_dav_endpoint_status(404));
-        assert!(!is_dav_endpoint_status(500));
+    pub fn surface_is_psi_eligible(fixture: SurfaceFixture) -> bool {
+        surface::surface_is_psi_eligible(&to_surface_observation(fixture))
     }
 
-    #[test]
-    fn api_probe_skips_when_site_is_already_classified() {
-        let profile = SiteProfile {
-            host: "artisanhosting.net".to_string(),
-            kind: "basic".to_string(),
-            provider: Some("wordpress".to_string()),
-            confidence: 0.9,
-            signals: vec!["wordpress".to_string()],
-        };
-
-        assert!(!should_probe_api_endpoints(
-            "zombie site: blank root response body",
-            Some(&profile),
-            true
-        ));
+    pub fn looks_like_website_body(body: &str, content_type: &str) -> bool {
+        surface::looks_like_website_body(body, content_type)
     }
 
-    #[test]
-    fn api_probe_runs_for_weak_blank_sites() {
-        let profile = SiteProfile {
-            host: "artisanhosting.net".to_string(),
-            kind: "basic".to_string(),
-            provider: None,
-            confidence: 0.62,
-            signals: vec!["plain".to_string()],
-        };
-
-        assert!(should_probe_api_endpoints(
-            "zombie site: blank root response body",
-            Some(&profile),
-            true
-        ));
+    pub fn is_api_endpoint_status(status_code: u16) -> bool {
+        surface::is_api_endpoint_status(status_code)
     }
 
-    #[test]
-    fn dav_probe_runs_for_weak_blank_sites() {
-        let profile = SiteProfile {
-            host: "artisanhosting.net".to_string(),
-            kind: "basic".to_string(),
-            provider: None,
-            confidence: 0.62,
-            signals: vec!["plain".to_string()],
-        };
-
-        assert!(should_probe_dav_endpoints(Some(&profile), true));
+    pub fn is_dav_endpoint_status(status_code: u16) -> bool {
+        surface::is_dav_endpoint_status(status_code)
     }
 
-    #[test]
-    fn disabled_probes_do_not_run() {
-        let profile = SiteProfile {
-            host: "artisanhosting.net".to_string(),
-            kind: "basic".to_string(),
-            provider: None,
-            confidence: 0.62,
-            signals: vec!["plain".to_string()],
-        };
-
-        let probes = DiscoveryProbeConfig {
-            api_endpoints: false,
-            dav_endpoints: false,
-        };
-
-        assert!(!should_probe_api_endpoints(
-            "zombie site: blank root response body",
-            Some(&profile),
-            probes.api_endpoints
-        ));
-        assert!(!should_probe_dav_endpoints(
-            Some(&profile),
-            probes.dav_endpoints
-        ));
+    pub fn should_probe_api_endpoints(
+        reason: &str,
+        profile: Option<&SiteProfile>,
+        enabled: bool,
+    ) -> bool {
+        surface::should_probe_api_endpoints(reason, profile, enabled)
     }
 
-    #[test]
-    fn classifies_nextcloud_markers_as_dav() {
-        let surface = SurfaceObservation {
-            body: Some("nextcloud ocs/v2.php".to_string()),
-            ..SurfaceObservation::default()
-        };
-
-        let profile = classify_site("files.artisanhosting.net", &surface, vec![])
-            .expect("surface should classify");
-        assert_eq!(profile.kind, "dav");
-        assert_eq!(profile.provider.as_deref(), Some("nextcloud"));
+    pub fn should_probe_dav_endpoints(profile: Option<&SiteProfile>, enabled: bool) -> bool {
+        surface::should_probe_dav_endpoints(profile, enabled)
     }
 
-    #[test]
-    fn extracts_bare_hostnames_from_surface_text() {
-        let hosts = extract_surface_hosts(
-            "api.artisanhosting.net dashboard.artisanhosting.net https://docs.artisanhosting.net foo.example.com",
-            "artisanhosting.net",
-        );
+    pub fn classify_site(
+        host: &str,
+        body: Option<&str>,
+        content_type: Option<&str>,
+    ) -> Option<SiteProfile> {
+        site::classify_site(
+            host,
+            &surface::SurfaceObservation {
+                body: body.map(str::to_string),
+                content_type: content_type.map(str::to_string),
+                ..surface::SurfaceObservation::default()
+            },
+            vec![],
+        )
+    }
 
-        assert!(hosts.contains("api.artisanhosting.net"));
-        assert!(hosts.contains("dashboard.artisanhosting.net"));
-        assert!(hosts.contains("docs.artisanhosting.net"));
-        assert!(!hosts.contains("foo.example.com"));
+    pub fn extract_surface_hosts_for(text: &str, apex: &str) -> BTreeSet<String> {
+        extract_surface_hosts(text, apex)
+    }
+
+    pub fn matches_pattern(pattern: &str, candidate: &str) -> bool {
+        super::matches_pattern(pattern, candidate)
+    }
+
+    pub fn normalize_hostname(input: &str, domain: &str) -> String {
+        super::normalize_hostname(input, domain)
+    }
+
+    pub fn is_host_in_scope(host: &str, cfg: &RunConfig, apex: &str) -> bool {
+        super::is_host_in_scope(host, cfg, apex)
     }
 }

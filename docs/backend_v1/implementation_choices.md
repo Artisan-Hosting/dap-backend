@@ -20,7 +20,7 @@ This file captures the service decisions that are now concrete in code.
 - support is computed from plugin manifest presence, entrypoint existence, runtime support, env readiness, and enable/disable filters
 - category is derived from `plugins/<category>/<id>`
 - `psi_web_performance` is treated specially because the current manifest lists both API-key and credentials-file env vars even though the plugin supports either credential path; the registry marks it runnable when any supported PSI credential source is available
-- `discovery_api_probe` and `discovery_dav_probe` are synthetic supported tests surfaced through the same capability registry so the UI can present them in `GET /v1/tests`; their config toggles control whether discovery performs additional API or DAV follow-up probing on weak hosts
+- `discovery_api_probe` and `discovery_dav_probe` are synthetic supported tests surfaced through the same capability registry so the UI can present them in `GET /v1/tests`; their config toggles control whether discovery performs additional API or DAV follow-up probing on weak hosts, while per-run execution is still gated by whether the client explicitly requested them
 
 ## Queue Recovery
 

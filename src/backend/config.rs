@@ -181,7 +181,7 @@ impl BackendConfig {
         }
     }
 
-    pub fn audit_config_for_target(&self, target_key: &str) -> RunConfig {
+    pub fn audit_config_for_target(&self, target_key: &str, requested_tests: &[String]) -> RunConfig {
         let scope_mode = self.scope_mode_for_target(target_key);
         let scope = match scope_mode {
             ScopeMode::DomainSweep => ScopeConfig {
@@ -200,7 +200,7 @@ impl BackendConfig {
             exclude: self.engine.exclude.clone(),
             scope,
             discovery: Default::default(),
-            discovery_probes: self.engine.discovery_probes.clone(),
+            discovery_probes: super::capabilities::requested_discovery_probes(self, requested_tests),
             psi: self.engine.psi.clone(),
             execution: self.engine.execution.clone(),
             report: self.engine.report.clone(),
