@@ -4,6 +4,8 @@ mod contracts;
 mod storage;
 mod worker;
 
+use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{collections::BTreeSet, fs, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
@@ -16,8 +18,9 @@ use axum::{
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use tokio::{net::TcpListener, signal, sync::Notify};
-use tracing::{error, info};
+use tokio::{net::TcpListener, process::Command, signal, sync::Notify};
+use tower_http::cors::{Any, CorsLayer};
+use tracing::{info, warn};
 
 use crate::{planner::RulesEngine, plugins::PluginCatalog, python_env, runner::Runner};
 
@@ -27,18 +30,116 @@ use self::{
     contracts::{
         CreateRunRequest, CreateRunResponse, ErrorResponse, RunState, SupportedTestsResponse,
     },
-    storage::Storage,
 };
 
+pub use config::StorageConfig;
+pub use storage::{CtSubdomainCacheEntry, Storage};
+
+#[derive(Debug)]
+pub(crate) struct ShutdownState {
+    notified: Notify,
+    requested: AtomicBool,
+}
+
+impl ShutdownState {
+    fn new() -> Self {
+        Self {
+            notified: Notify::new(),
+            requested: AtomicBool::new(false),
+        }
+    }
+
+    fn trigger(&self) {
+        self.requested.store(true, Ordering::SeqCst);
+        self.notified.notify_waiters();
+    }
+
+    fn is_triggered(&self) -> bool {
+        self.requested.load(Ordering::SeqCst)
+    }
+
+    async fn notified(&self) {
+        self.notified.notified().await;
+    }
+}
+
 pub async fn run(config_path: PathBuf) -> Result<()> {
-    let config = BackendConfig::from_file_or_default(&config_path)?;
+    run_server(config_path).await
+}
+
+pub async fn run_server(config_path: PathBuf) -> Result<()> {
+    let state = load_state(&config_path, true).await?;
+    let worker_handle = spawn_worker_process(&config_path, state.shutdown.clone()).await?;
+
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
+    let app = Router::new()
+        .route("/v1/tests", get(get_tests))
+        .route("/v1/runs", post(create_run))
+        .route("/v1/runs/:run_id", get(get_run_status))
+        .route("/v1/runs/:run_id/results", get(get_run_results))
+        .route("/v1/runs/:run_id/report", get(get_run_report))
+        .route("/v1/targets/:target/latest", get(get_latest_target_run))
+        .route("/v1/targets/:target/history", get(get_target_history))
+        .layer(cors)
+        .with_state(state.clone());
+
+    let listener = TcpListener::bind(&state.config.server.bind)
+        .await
+        .with_context(|| format!("failed to bind {}", state.config.server.bind))?;
+    info!(bind = %state.config.server.bind, "backend listening");
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(state.shutdown.clone()))
+        .await
+        .context("axum server failed")?;
+
+    state.shutdown.trigger();
+    let worker_status = worker_handle
+        .await
+        .context("worker process join failed")??;
+    if !worker_status.success() {
+        warn!(status = %worker_status, "worker process exited during shutdown");
+    }
+
+    Ok(())
+}
+
+pub async fn run_worker(config_path: PathBuf) -> Result<()> {
+    let state = load_state(&config_path, false).await?;
+    let shutdown = state.shutdown.clone();
+    let worker_state = state.clone();
+    let mut worker_handle = tokio::spawn(async move { worker::run_loop(worker_state).await });
+
+    tokio::select! {
+        result = &mut worker_handle => {
+            result.context("worker loop join failed")??;
+            Ok(())
+        }
+        _ = shutdown_signal(shutdown) => {
+            state.shutdown.trigger();
+            worker_handle
+                .await
+                .context("worker loop join failed")??;
+            Ok(())
+        }
+    }
+}
+
+async fn load_state(config_path: &PathBuf, recover_runs: bool) -> Result<Arc<AppState>> {
+    let config = BackendConfig::from_file_or_default(config_path)?;
     let storage = Storage::connect(&config.storage).await?;
-    let recovered = storage.recover_incomplete_runs().await?;
-    if recovered > 0 {
-        info!(
-            recovered_runs = recovered,
-            "re-queued incomplete runs during startup recovery"
-        );
+    if recover_runs {
+        let recovered = storage.recover_incomplete_runs().await?;
+        if recovered > 0 {
+            info!(
+                recovered_runs = recovered,
+                "re-queued incomplete runs during startup recovery"
+            );
+        }
     }
 
     let rules = RulesEngine::from_file(&config.engine.rules_path)?;
@@ -50,7 +151,7 @@ pub async fn run(config_path: PathBuf) -> Result<()> {
     let rules_version = hash_file(&config.engine.rules_path)?;
     let config_hash = hash_json(&config.engine)?;
 
-    let state = Arc::new(AppState {
+    Ok(Arc::new(AppState {
         config,
         storage,
         capabilities,
@@ -62,37 +163,45 @@ pub async fn run(config_path: PathBuf) -> Result<()> {
             rules_version,
             config_hash,
         },
-        worker_notify: Arc::new(Notify::new()),
-    });
+        shutdown: Arc::new(ShutdownState::new()),
+    }))
+}
 
-    let worker_state = state.clone();
-    tokio::spawn(async move {
-        if let Err(err) = worker::run_loop(worker_state).await {
-            error!(error = %err, "worker loop exited unexpectedly");
+async fn spawn_worker_process(
+    config_path: &PathBuf,
+    shutdown: Arc<ShutdownState>,
+) -> Result<tokio::task::JoinHandle<Result<std::process::ExitStatus>>> {
+    let worker_exe = std::env::current_exe().context("failed to locate current executable")?;
+    let config_path = config_path.clone();
+
+    Ok(tokio::spawn(async move {
+        let mut command = Command::new(worker_exe);
+        command
+            .arg("--worker")
+            .env("ARTISAN_DAP_BACKEND_CONFIG", config_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+
+        let mut child = command
+            .spawn()
+            .context("failed to spawn dedicated worker process")?;
+
+        let status = child
+            .wait()
+            .await
+            .context("failed while waiting for dedicated worker process")?;
+
+        if !shutdown.is_triggered() && !status.success() {
+            shutdown.trigger();
+            return Err(anyhow::anyhow!(
+                "dedicated worker process exited unexpectedly: {}",
+                status
+            ));
         }
-    });
 
-    let app = Router::new()
-        .route("/v1/tests", get(get_tests))
-        .route("/v1/runs", post(create_run))
-        .route("/v1/runs/:run_id", get(get_run_status))
-        .route("/v1/runs/:run_id/results", get(get_run_results))
-        .route("/v1/runs/:run_id/report", get(get_run_report))
-        .route("/v1/targets/:target/latest", get(get_latest_target_run))
-        .route("/v1/targets/:target/history", get(get_target_history))
-        .with_state(state.clone());
-
-    let listener = TcpListener::bind(&state.config.server.bind)
-        .await
-        .with_context(|| format!("failed to bind {}", state.config.server.bind))?;
-    info!(bind = %state.config.server.bind, "backend listening");
-
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("axum server failed")?;
-
-    Ok(())
+        Ok(status)
+    }))
 }
 
 #[derive(Debug, Clone)]
@@ -101,7 +210,7 @@ pub(crate) struct AppState {
     pub(crate) storage: Storage,
     pub(crate) capabilities: CapabilityRegistry,
     pub(crate) engine: EngineState,
-    pub(crate) worker_notify: Arc<Notify>,
+    pub(crate) shutdown: Arc<ShutdownState>,
 }
 
 #[derive(Debug, Clone)]
@@ -178,8 +287,6 @@ async fn create_run(
         )
         .await
         .map_err(ApiError::internal)?;
-
-    state.worker_notify.notify_one();
 
     let status = if submission.state == RunState::CacheHit {
         StatusCode::OK
@@ -451,8 +558,10 @@ fn hash_bytes(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(shutdown: Arc<ShutdownState>) {
     let _ = signal::ctrl_c().await;
+    info!("shutdown requested via ctrl-c");
+    shutdown.trigger();
 }
 
 #[cfg(test)]

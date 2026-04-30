@@ -20,10 +20,12 @@ use crate::{
         contracts::{PlannedTestState, RequestedTestState, RunState},
         storage::{NewArtifactRecord, NewResultRecord, PendingPlannedTestRow, new_prefixed_id},
     },
-    discovery::perform_discovery,
+    discovery::perform_discovery_with_ct_cache,
     tests::{TestInput, TestOutput, TestStatus},
     workspace::sanitize_component,
 };
+
+const MAX_DISCOVERED_SUBDOMAINS: usize = 100;
 
 #[derive(Debug, Clone)]
 struct RuntimePlannedTest {
@@ -85,6 +87,11 @@ impl RunPaths {
 
 pub async fn run_loop(state: Arc<AppState>) -> Result<()> {
     loop {
+        if state.shutdown.is_triggered() {
+            info!("worker exiting cleanly after shutdown request");
+            return Ok(());
+        }
+
         match state.storage.claim_next_run().await {
             Ok(Some(run)) => {
                 if let Err(err) = process_run(state.clone(), run).await {
@@ -93,7 +100,10 @@ pub async fn run_loop(state: Arc<AppState>) -> Result<()> {
             }
             Ok(None) => {
                 tokio::select! {
-                    _ = state.worker_notify.notified() => {}
+                    _ = state.shutdown.notified() => {
+                        info!("worker exiting cleanly after shutdown request");
+                        return Ok(());
+                    }
                     _ = sleep(Duration::from_millis(state.config.engine.worker_poll_interval_ms)) => {}
                 }
             }
@@ -109,6 +119,9 @@ pub async fn run_loop(state: Arc<AppState>) -> Result<()> {
 }
 
 async fn process_run(state: Arc<AppState>, run: crate::backend::storage::QueuedRun) -> Result<()> {
+    if state.shutdown.is_triggered() {
+        info!(run_id = %run.run_id, "shutdown requested; finishing current run before exit");
+    }
     info!(run_id = %run.run_id, target = %run.target_key, target_input = %run.target_input, "worker claimed run");
     let run_paths = RunPaths::prepare(
         &state.config.storage.artifacts_root,
@@ -119,7 +132,12 @@ async fn process_run(state: Arc<AppState>, run: crate::backend::storage::QueuedR
 
     let process_result = async {
         let run_config = state.config.audit_config_for_target(&run.target_key);
-        let discovery = perform_discovery(&run_config).await?;
+        let discovery = perform_discovery_with_ct_cache(
+            &run_config,
+            &state.storage,
+            state.config.cache.ct_subdomain_cache_ttl_seconds,
+        )
+        .await?;
         state
             .storage
             .insert_discovery(
@@ -129,6 +147,41 @@ async fn process_run(state: Arc<AppState>, run: crate::backend::storage::QueuedR
                 &discovery.dead_hosts,
             )
             .await?;
+
+        if state.shutdown.is_triggered() {
+            info!(
+                run_id = %run.run_id,
+                "shutdown requested after discovery; leaving run incomplete for recovery"
+            );
+            return Ok::<(), anyhow::Error>(());
+        }
+
+        if discovery.subdomain_count > MAX_DISCOVERED_SUBDOMAINS {
+            let reason = format!(
+                "domain too big: discovered {} subdomains (limit {})",
+                discovery.subdomain_count, MAX_DISCOVERED_SUBDOMAINS
+            );
+
+            for requested_test in &run.requested_tests {
+                state
+                    .storage
+                    .set_requested_test_outcome(
+                        &run.run_id,
+                        requested_test,
+                        RequestedTestState::RejectedNotApplicable,
+                        Some(&reason),
+                    )
+                    .await?;
+            }
+
+            state
+                .storage
+                .set_run_state(&run.run_id, RunState::Aggregating)
+                .await?;
+            write_report(state.clone(), &run.run_id, &run_paths).await?;
+            state.storage.mark_run_completed(&run.run_id).await?;
+            return Ok(());
+        }
 
         state
             .storage
@@ -201,19 +254,73 @@ async fn process_run(state: Arc<AppState>, run: crate::backend::storage::QueuedR
             .insert_planned_tests(&run.run_id, &pending_rows)
             .await?;
 
-        if !runtime_tests.is_empty() {
+        if state.shutdown.is_triggered() {
+            info!(
+                run_id = %run.run_id,
+                "shutdown requested after planning; leaving run incomplete for recovery"
+            );
+            return Ok::<(), anyhow::Error>(());
+        }
+
+        let (main_tests, api_tests): (Vec<_>, Vec<_>) = runtime_tests
+            .into_iter()
+            .partition(|planned| !crate::tests::runs_in_late_phase(&planned.test_id));
+
+        info!(
+            run_id = %run.run_id,
+            main_tests = main_tests.len(),
+            api_tests = api_tests.len(),
+            "split planned tests into main and deferred phases"
+        );
+
+        if !main_tests.is_empty() {
             state
                 .storage
                 .set_run_state(&run.run_id, RunState::Running)
                 .await?;
-            execute_planned_tests(
+            execute_planned_tests_phase(
+                "main",
                 state.clone(),
                 &run,
                 &run_paths,
-                runtime_tests,
+                main_tests,
                 &discovery.dead_hosts,
             )
             .await?;
+        }
+
+        if state.shutdown.is_triggered() {
+            info!(
+                run_id = %run.run_id,
+                "shutdown requested after main phase; leaving run incomplete for recovery"
+            );
+            return Ok::<(), anyhow::Error>(());
+        }
+
+        if !api_tests.is_empty() {
+            info!(
+                run_id = %run.run_id,
+                tests = api_tests.len(),
+                "starting deferred api fuzz phase"
+            );
+            execute_planned_tests_phase(
+                "api_fuzz",
+                state.clone(),
+                &run,
+                &run_paths,
+                api_tests,
+                &discovery.dead_hosts,
+            )
+            .await?;
+            info!(run_id = %run.run_id, "completed deferred api fuzz phase");
+        }
+
+        if state.shutdown.is_triggered() {
+            info!(
+                run_id = %run.run_id,
+                "shutdown requested before final aggregation; leaving run incomplete for recovery"
+            );
+            return Ok::<(), anyhow::Error>(());
         }
 
         state
@@ -239,7 +346,8 @@ async fn process_run(state: Arc<AppState>, run: crate::backend::storage::QueuedR
     Ok(())
 }
 
-async fn execute_planned_tests(
+async fn execute_planned_tests_phase(
+    phase: &'static str,
     state: Arc<AppState>,
     run: &crate::backend::storage::QueuedRun,
     run_paths: &RunPaths,
@@ -260,6 +368,13 @@ async fn execute_planned_tests(
 
     let mut join_set = JoinSet::new();
     for planned in planned_tests {
+        if state.shutdown.is_triggered() {
+            info!(
+                phase = phase,
+                "shutdown requested before scheduling more planned tests"
+            );
+            break;
+        }
         let state = state.clone();
         let run_id = run.run_id.clone();
         let run_paths = run_paths.clone();
@@ -272,7 +387,18 @@ async fn execute_planned_tests(
             let host_key = planned.execution_target.to_lowercase();
             let host_sem = host_semaphore(&host_limits, &host_key, per_host_limit).await;
             let _host_guard = host_sem.acquire_owned().await?;
-            execute_one_planned_test(state, &run_id, &run_paths, planned, &dead_map).await
+
+            if state.shutdown.is_triggered() {
+                info!(
+                    phase = phase,
+                    test_id = %planned.test_id,
+                    target = %planned.execution_target,
+                    "shutdown requested before planned test start"
+                );
+                return Ok::<(), anyhow::Error>(());
+            }
+
+            execute_one_planned_test(phase, state, &run_id, &run_paths, planned, &dead_map).await
         });
     }
 
@@ -288,70 +414,95 @@ async fn execute_planned_tests(
 }
 
 async fn execute_one_planned_test(
+    phase: &'static str,
     state: Arc<AppState>,
     run_id: &str,
     run_paths: &RunPaths,
     planned: RuntimePlannedTest,
     dead_map: &BTreeMap<String, String>,
 ) -> Result<()> {
+    let RuntimePlannedTest {
+        planned_test_id,
+        test_id,
+        execution_target,
+        supporting_facts,
+        ..
+    } = planned;
+
+    info!(
+        phase = phase,
+        test_id = %test_id,
+        target = %execution_target,
+        planned_test_id = %planned_test_id,
+        "starting planned test"
+    );
+
     state
         .storage
-        .mark_planned_test_running(&planned.planned_test_id)
+        .mark_planned_test_running(&planned_test_id)
         .await?;
 
     let plugin_version = state
         .engine
         .plugins
-        .get(&crate::tests::TestId(planned.test_id.clone()))
+        .get(&crate::tests::TestId(test_id.clone()))
         .map(|record| record.manifest.version.clone())
         .unwrap_or_else(|| "unknown".to_string());
 
-    if let Some(reason) = dead_map.get(&planned.execution_target.to_lowercase()) {
-        let result = NewResultRecord {
-            result_id: new_prefixed_id("res"),
-            run_id: run_id.to_string(),
-            planned_test_id: planned.planned_test_id,
-            target_key: planned.execution_target.to_lowercase(),
-            execution_target: planned.execution_target.clone(),
-            test_id: planned.test_id.clone(),
-            plugin_version,
-            output: TestOutput::placeholder(
-                planned.test_id,
-                planned.execution_target,
-                TestStatus::Skipped,
-                format!("host marked dead: {reason}"),
-            ),
-            timed_out: false,
-            exit_code: None,
-            stderr_non_empty: false,
-            duration_ms: 0,
-            created_at: chrono::Utc::now(),
-        };
+    if !crate::tests::runs_on_dead_host(&test_id) {
+        if let Some(reason) = dead_map.get(&execution_target.to_lowercase()) {
+            let result = NewResultRecord {
+                result_id: new_prefixed_id("res"),
+                run_id: run_id.to_string(),
+                planned_test_id,
+                target_key: execution_target.to_lowercase(),
+                execution_target: execution_target.clone(),
+                test_id: test_id.clone(),
+                plugin_version,
+                output: TestOutput::placeholder(
+                    test_id,
+                    execution_target.clone(),
+                    TestStatus::Skipped,
+                    format!("host marked dead: {reason}"),
+                ),
+                timed_out: false,
+                exit_code: None,
+                stderr_non_empty: false,
+                duration_ms: 0,
+                created_at: chrono::Utc::now(),
+            };
 
-        state
-            .storage
-            .record_result(PlannedTestState::SkippedDeadHost, &result, &[])
-            .await?;
-        return Ok(());
+            state
+                .storage
+                .record_result(PlannedTestState::SkippedDeadHost, &result, &[])
+                .await?;
+            info!(
+                phase = phase,
+                test_id = %result.test_id,
+                target = %result.execution_target,
+                "skipped planned test on dead host"
+            );
+            return Ok(());
+        }
     }
 
     let Some(record) = state
         .engine
         .plugins
-        .get(&crate::tests::TestId(planned.test_id.clone()))
+        .get(&crate::tests::TestId(test_id.clone()))
         .cloned()
     else {
         let result = NewResultRecord {
             result_id: new_prefixed_id("res"),
             run_id: run_id.to_string(),
-            planned_test_id: planned.planned_test_id,
-            target_key: planned.execution_target.to_lowercase(),
-            execution_target: planned.execution_target.clone(),
-            test_id: planned.test_id.clone(),
+            planned_test_id,
+            target_key: execution_target.to_lowercase(),
+            execution_target: execution_target.clone(),
+            test_id: test_id.clone(),
             plugin_version,
             output: TestOutput::placeholder(
-                planned.test_id,
-                planned.execution_target,
+                test_id,
+                execution_target.clone(),
                 TestStatus::Error,
                 "requested plugin is no longer present in the plugin catalog",
             ),
@@ -366,12 +517,18 @@ async fn execute_one_planned_test(
             .storage
             .record_result(PlannedTestState::FailedToStart, &result, &[])
             .await?;
+        info!(
+            phase = phase,
+            test_id = %result.test_id,
+            target = %result.execution_target,
+            "planned test plugin missing"
+        );
         return Ok(());
     };
 
     let input = TestInput {
-        target: planned.execution_target.clone(),
-        facts: planned.supporting_facts.clone(),
+        target: execution_target.clone(),
+        facts: supporting_facts.clone(),
         config: json!({
             "run_root": run_paths.root,
             "results_dir": run_paths.results_dir,
@@ -386,9 +543,9 @@ async fn execute_one_planned_test(
         run_id,
         &result_id,
         run_paths,
-        &planned.planned_test_id,
-        &planned.test_id,
-        &planned.execution_target,
+        &planned_test_id,
+        &test_id,
+        &execution_target,
         &execution.stdout,
         &execution.stderr,
     )
@@ -397,10 +554,10 @@ async fn execute_one_planned_test(
     let result = NewResultRecord {
         result_id,
         run_id: run_id.to_string(),
-        planned_test_id: planned.planned_test_id,
-        target_key: planned.execution_target.to_lowercase(),
-        execution_target: planned.execution_target,
-        test_id: planned.test_id,
+        planned_test_id,
+        target_key: execution_target.to_lowercase(),
+        execution_target,
+        test_id,
         plugin_version: record.manifest.version,
         output: execution.output,
         timed_out: execution.timed_out,
@@ -415,11 +572,20 @@ async fn execute_one_planned_test(
     } else {
         PlannedTestState::FailedToStart
     };
+    let planned_state_label = planned_state.as_str();
 
     state
         .storage
         .record_result(planned_state, &result, &artifacts)
         .await?;
+
+    info!(
+        phase = phase,
+        test_id = %result.test_id,
+        target = %result.execution_target,
+        planned_state = planned_state_label,
+        "finished planned test"
+    );
 
     Ok(())
 }
