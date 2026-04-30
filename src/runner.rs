@@ -39,6 +39,13 @@ impl Runner {
 impl Runner {
     /// Create a new runner anchored at the plugin root directory.
     pub fn new(plugin_root: PathBuf, python_bin: PathBuf) -> Self {
+        let plugin_root = if plugin_root.is_absolute() {
+            plugin_root
+        } else {
+            env::current_dir()
+                .map(|cwd| cwd.join(&plugin_root))
+                .unwrap_or(plugin_root)
+        };
         let python_bin = if python_bin.is_absolute() {
             python_bin
         } else {
@@ -90,12 +97,12 @@ impl Runner {
         let mut command = match manifest.runtime {
             PluginRuntime::Python => {
                 let mut cmd = Command::new(&self.python_bin);
-                cmd.arg(&manifest.entrypoint);
+                cmd.arg(&entrypoint);
                 cmd
             }
             PluginRuntime::Shell => {
                 let mut cmd = Command::new("/bin/bash");
-                cmd.arg(&manifest.entrypoint);
+                cmd.arg(&entrypoint);
                 cmd
             }
             PluginRuntime::Binary => Command::new(&entrypoint),

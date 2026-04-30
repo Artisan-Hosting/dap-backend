@@ -9,10 +9,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::{collections::BTreeSet, fs, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
+use axum::extract::{Path as AxumPath, State};
 use axum::{
     Json, Router,
-    extract::{Path as AxumPath, State},
-    http::StatusCode,
+    http::{HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -71,7 +71,7 @@ pub async fn run_server(config_path: PathBuf) -> Result<()> {
     let worker_handle = spawn_worker_process(&config_path, state.shutdown.clone()).await?;
 
     let cors = CorsLayer::new()
-        .allow_origin(Any)
+        .allow_origin("https://dap.artisanhosting.net".parse::<HeaderValue>().unwrap())
         .allow_methods(Any)
         .allow_headers(Any);
 

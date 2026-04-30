@@ -24,7 +24,7 @@ plugins_path = "plugins"
 default_scope_mode = "domain_sweep"
 force_single_site_for_hostnames = false
 enabled_tests = []
-disabled_tests = ["web_api_fuzz"]
+disabled_tests = []
 
 [engine.discovery_probes]
 api_endpoints = true
@@ -45,4 +45,4 @@ enabled = true
 strategies = ["mobile", "desktop"]
 categories = ["performance", "accessibility", "best-practices", "seo"]
 timeout_seconds = 120
-credentials_file = "/home/dwhitfield/Developer/Artisan_Hosting/Software/dap-backend/.gsa"
+#credentials_file = "/home/dwhitfield/Developer/Artisan_Hosting/Software/dap-backend/.gsa"
