@@ -171,7 +171,8 @@ def main() -> None:
         json.dump(output, sys.stdout)
         return
 
-    resolver = dns.resolver.Resolver()
+    resolver = dns.resolver.Resolver(configure=False)
+    resolver.nameservers = ['1.1.1.1', '1.0.0.1']  # Cloudflare DNS servers
     resolver.timeout = 2.0
     resolver.lifetime = 5.0
 

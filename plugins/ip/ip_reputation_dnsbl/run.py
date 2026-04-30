@@ -24,6 +24,10 @@ except ImportError as exc:  # pragma: no cover
 DNSBLS = [
     ("Spamhaus ZEN", "zen.spamhaus.org"),
     ("Spamcop", "bl.spamcop.net"),
+    ("Barracuda", "b.barracudacentral.org"),
+    ("PSBL", "psbl.surriel.com"),
+    ("SORBS", "dnsbl.sorbs.net"),
+    ("UCEPROTECT L1", "dnsbl-1.uceprotect.net"),
 ]
 
 
@@ -49,7 +53,8 @@ def reverse_ipv4(ip: str) -> str:
 
 
 def dnsbl_listings(ip: str) -> list[dict]:
-    resolver = dns.resolver.Resolver(configure=True)
+    resolver = dns.resolver.Resolver(configure=False)
+    resolver.nameservers = ['1.1.1.1', '1.0.0.1']  # Cloudflare DNS servers
     resolver.lifetime = 3.0
     resolver.timeout = 2.0
     listed = []

@@ -298,21 +298,45 @@ def main() -> None:
             "notes": None,
         }
     except Exception as exc:
+        import traceback
+        error_detail = str(exc)
+        error_traceback = traceback.format_exc()
+        
+        # Parse common errors
+        recommendations = [
+            "Validate API key/credentials, quotas, and network connectivity",
+        ]
+        
+        if "No access token" in error_detail or "id_token" in error_detail:
+            recommendations = [
+                "Service account token exchange failed - ensure PageSpeed Insights API is enabled in GCP",
+                "Visit: https://console.cloud.google.com/apis/library/pagespeedonline.googleapis.com",
+                "Enable the API and ensure service account has Editor or custom role with pagespeedonline.*.read",
+            ]
+        elif "quota" in error_detail.lower():
+            recommendations = [
+                "PageSpeed Insights API quota exceeded",
+                "Check quota at: https://console.cloud.google.com/iam-admin/quotas",
+            ]
+        elif "permission" in error_detail.lower():
+            recommendations = [
+                "Service account lacks required permissions",
+                "Grant roles/pagespeedonline.apiuser or equivalent to the service account",
+            ]
+        
         output = {
             "test_id": "psi_web_performance",
             "target": url,
             "status": "error",
             "severity": "informational",
             "evidence": {
-                "error": str(exc),
+                "error": error_detail,
                 "credential_mode": credential_mode,
                 "resolved_credentials_file": str(cred_path) if cred_path else os.environ.get(
                     "PAGESPEED_CREDENTIALS_FILE"
                 ),
             },
-            "recommendations": [
-                "Validate API key/credentials, quotas, and network connectivity",
-            ],
+            "recommendations": recommendations,
             "notes": "PSI API request failed",
         }
 

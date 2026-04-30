@@ -1,0 +1,16 @@
+# Well-known endpoint discovery for web properties.
+id: web_well_known
+name: Well-known endpoint discovery
+version: 0.1.0
+entrypoint: run.py
+runtime: python
+triggers:
+  any:
+    - entity: site_profile
+    - entity: web_service
+      where:
+        alive: false
+limits:
+  timeout_seconds: 20
+  memory_mb: 128
+env: []

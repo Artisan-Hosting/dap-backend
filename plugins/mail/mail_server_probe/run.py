@@ -58,11 +58,21 @@ def resolve_domain(payload: Dict[str, Any]) -> str:
     return payload.get("target", "")
 
 
+def get_resolver():
+    """Create a DNS resolver configured to use Cloudflare DNS."""
+    resolver = dns.resolver.Resolver(configure=False)
+    resolver.nameservers = ['1.1.1.1', '1.0.0.1']  # Cloudflare DNS servers
+    resolver.lifetime = 3.0
+    resolver.timeout = 2.0
+    return resolver
+
+
 def query_mx_records(domain: str) -> list[tuple[int, str]]:
     try:
+        resolver = get_resolver()
         records = [
             (int(record.preference), str(record.exchange).rstrip(".").lower())
-            for record in dns.resolver.resolve(domain, "MX")
+            for record in resolver.resolve(domain, "MX")
         ]
     except Exception:
         return []
@@ -71,9 +81,10 @@ def query_mx_records(domain: str) -> list[tuple[int, str]]:
 
 def query_addresses(name: str) -> list[str]:
     addresses: list[str] = []
+    resolver = get_resolver()
     for record_type in ("A", "AAAA"):
         try:
-            for record in dns.resolver.resolve(name, record_type):
+            for record in resolver.resolve(name, record_type):
                 addresses.append(record.to_text())
         except Exception:
             continue

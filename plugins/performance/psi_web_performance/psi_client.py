@@ -59,14 +59,38 @@ def _service_account_token() -> str:
             "google-auth is required for service account credentials; install google-auth"
         ) from exc
 
-    credentials = service_account.Credentials.from_service_account_file(path, scopes=[SCOPE])
+    # Create service account credentials
+    # Scopes parameter ensures OAuth2 flow instead of JWT bearer mode
+    credentials = service_account.Credentials.from_service_account_file(
+        path, 
+        scopes=[SCOPE]
+    )
+    
+    # Disable JWT self-signed access to force OAuth2 token exchange
+    # This is critical - it tells google-auth to exchange JWT for access_token
     if hasattr(credentials, "with_always_use_jwt_access"):
         credentials = credentials.with_always_use_jwt_access(False)
+    
+    # Perform token exchange: JWT -> access_token
     request = Request()
-    credentials.refresh(request)
+    try:
+        credentials.refresh(request)
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to refresh service account credentials: {e}. "
+            f"Ensure the service account has PageSpeed Insights API access enabled."
+        )
+    
+    # Verify we got an access token (not id_token or empty)
+    if not hasattr(credentials, 'token') or not credentials.token:
+        raise RuntimeError(
+            "Failed to obtain access_token from service account refresh. "
+            "The service account may lack PageSpeed Insights API permissions. "
+            "See: https://cloud.google.com/docs/authentication/getting-started"
+        )
 
     expiry = credentials.expiry
-    expiry_epoch = expiry.timestamp() if hasattr(expiry, "timestamp") else now + 3000
+    expiry_epoch = expiry.timestamp() if hasattr(expiry, "timestamp") else now + 3600
     _TOKEN = _TokenCache(credentials.token, float(expiry_epoch))
     return credentials.token
 

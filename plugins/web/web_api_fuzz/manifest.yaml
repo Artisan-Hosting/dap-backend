@@ -1,0 +1,18 @@
+# Small API endpoint fuzzing pass for discovered API hosts.
+id: web_api_fuzz
+name: API endpoint fuzzing
+version: 0.1.0
+entrypoint: run.py
+runtime: python
+triggers:
+  any:
+    - entity: site_profile
+      where:
+        kind: api
+    - entity: web_service
+      where:
+        alive: false
+limits:
+  timeout_seconds: 20
+  memory_mb: 128
+env: []
