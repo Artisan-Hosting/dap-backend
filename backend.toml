@@ -15,19 +15,21 @@ max_connections = 10
 [cache]
 freshness_window_seconds = 30
 dedupe_inflight = true
+ct_subdomain_cache_ttl_seconds = 86400
+# 86400
 
 [engine]
 rules_path = "rules.yaml"
 plugins_path = "plugins"
 default_scope_mode = "domain_sweep"
-force_single_site_for_hostnames = true
+force_single_site_for_hostnames = false
 enabled_tests = []
-disabled_tests = []
+disabled_tests = ["web_api_fuzz"]
 worker_poll_interval_ms = 1000
 
 [engine.execution]
-max_workers = 4
-per_host_concurrency = 2
+max_workers = 9
+per_host_concurrency = 3
 
 [engine.report]
 formats = ["json"]

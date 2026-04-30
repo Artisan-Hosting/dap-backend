@@ -4,11 +4,7 @@
 //! configuration format is intentionally declarative so non-Rust contributors
 //! can edit trigger logic via YAML without touching code.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fs,
-    path::Path,
-};
+use std::{collections::BTreeMap, fs, path::Path};
 
 use serde::Deserialize;
 use thiserror::Error;
@@ -67,8 +63,7 @@ impl RulesEngine {
 
     /// Plan tests by applying each rule to all facts.
     pub fn plan(&self, facts: &[Fact]) -> Vec<PlannedTest> {
-        let mut scheduled = Vec::new();
-        let mut seen: BTreeSet<(TestId, String)> = BTreeSet::new();
+        let mut scheduled: BTreeMap<(TestId, String), BTreeMap<String, Fact>> = BTreeMap::new();
 
         for fact in facts {
             for rule in &self.rules {
@@ -77,15 +72,22 @@ impl RulesEngine {
                 }
 
                 for test_id in &rule.run {
-                    let key = (TestId(test_id.clone()), fact.id.0.clone());
-                    if seen.insert(key) {
-                        scheduled.push(PlannedTest::new(test_id.clone(), vec![fact.clone()]));
-                    }
+                    let key = (TestId(test_id.clone()), fact.target.clone());
+                    scheduled
+                        .entry(key)
+                        .or_default()
+                        .entry(fact.id.0.clone())
+                        .or_insert_with(|| fact.clone());
                 }
             }
         }
 
         scheduled
+            .into_iter()
+            .map(|((test_id, _target), facts)| {
+                PlannedTest::new(test_id.0, facts.into_values().collect())
+            })
+            .collect()
     }
 }
 

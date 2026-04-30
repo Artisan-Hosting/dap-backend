@@ -623,6 +623,18 @@ fn derive_dead_reason(
     discovery_dead_hosts: &BTreeSet<String>,
 ) -> Option<String> {
     if discovery_dead_hosts.contains(&host.to_lowercase()) {
+        let has_live_signal = results.iter().any(|result| {
+            result.status != TestStatus::Skipped
+                && !(result.status == TestStatus::Error
+                    && result
+                        .notes
+                        .as_deref()
+                        .map(is_unavailable_note)
+                        .unwrap_or(false))
+        });
+        if has_live_signal {
+            return None;
+        }
         return Some("discovery marked host unreachable".to_string());
     }
 

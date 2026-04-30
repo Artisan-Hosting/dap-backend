@@ -11,6 +11,8 @@ use crate::facts::Fact;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TestId(pub String);
 
+const DEAD_HOST_BYPASS_TESTS: &[&str] = &["web_well_known", "web_api_fuzz"];
+
 /// Status values surfaced by plugin executions.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -46,6 +48,16 @@ impl TestStatus {
             _ => None,
         }
     }
+}
+
+/// Tests that should still run even when discovery marked a host dead.
+pub fn runs_on_dead_host(test_id: &str) -> bool {
+    DEAD_HOST_BYPASS_TESTS.contains(&test_id)
+}
+
+/// Tests that should run in a deferred phase after the main discovery-driven workload.
+pub fn runs_in_late_phase(test_id: &str) -> bool {
+    matches!(test_id, "web_api_fuzz")
 }
 
 /// Severity classification attached to findings.
@@ -157,5 +169,16 @@ impl PlannedTest {
             test_id: TestId(test_id.into()),
             supporting_facts,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::runs_in_late_phase;
+
+    #[test]
+    fn web_api_fuzz_is_deferred() {
+        assert!(runs_in_late_phase("web_api_fuzz"));
+        assert!(!runs_in_late_phase("web_hsts"));
     }
 }

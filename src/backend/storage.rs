@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -21,6 +21,8 @@ use crate::{
     facts::Fact,
     tests::{TestOutput, TestSeverity, TestStatus},
 };
+
+use tracing::warn;
 
 pub const REPORT_SCHEMA_VERSION: &str = "v1";
 
@@ -150,6 +152,14 @@ struct SiteProfileRow {
     provider: Option<String>,
     confidence: f64,
     signals_json: String,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct CtSubdomainCacheRow {
+    domain: String,
+    source: String,
+    subdomains_json: String,
+    updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -422,6 +432,42 @@ impl Storage {
         Ok(())
     }
 
+    pub async fn load_ct_subdomain_cache(
+        &self,
+        domain: &str,
+    ) -> Result<Option<CtSubdomainCacheEntry>> {
+        let row = sqlx::query_as::<_, CtSubdomainCacheRow>(
+            "SELECT domain, source, subdomains_json, updated_at FROM ct_subdomain_cache WHERE domain = ?",
+        )
+        .bind(domain.to_lowercase())
+        .fetch_optional(&self.pool)
+        .await
+        .with_context(|| format!("failed to load ct cache for {domain}"))?;
+
+        row.map(ct_cache_entry_from_row).transpose()
+    }
+
+    pub async fn upsert_ct_subdomain_cache(
+        &self,
+        domain: &str,
+        source: &str,
+        subdomains: &[String],
+    ) -> Result<()> {
+        let normalized = dedupe_strings(subdomains.to_vec());
+        sqlx::query(
+            "INSERT INTO ct_subdomain_cache (domain, source, subdomains_json, updated_at) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE source = VALUES(source), subdomains_json = VALUES(subdomains_json), updated_at = VALUES(updated_at)",
+        )
+        .bind(domain.to_lowercase())
+        .bind(source)
+        .bind(serde_json::to_string(&normalized)?)
+        .bind(Utc::now())
+        .execute(&self.pool)
+        .await
+        .with_context(|| format!("failed to upsert ct cache for {domain}"))?;
+
+        Ok(())
+    }
+
     pub async fn insert_discovery(
         &self,
         run_id: &str,
@@ -431,7 +477,18 @@ impl Storage {
     ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
 
-        for fact in facts {
+        let deduped_facts = dedupe_by_key(facts, |fact| fact.id.0.clone());
+        if deduped_facts.len() != facts.len() {
+            warn!(
+                run_id = %run_id,
+                original = facts.len(),
+                deduped = deduped_facts.len(),
+                skipped = facts.len() - deduped_facts.len(),
+                "skipping duplicate discovery facts"
+            );
+        }
+
+        for fact in deduped_facts {
             sqlx::query(
                 "INSERT INTO facts (fact_id, run_id, target_key, entity, attrs_json) VALUES (?, ?, ?, ?, ?)",
             )
@@ -444,7 +501,20 @@ impl Storage {
             .await?;
         }
 
-        for profile in site_profiles {
+        let deduped_profiles = dedupe_by_key(site_profiles, |profile| {
+            (profile.host.clone(), profile.kind.clone())
+        });
+        if deduped_profiles.len() != site_profiles.len() {
+            warn!(
+                run_id = %run_id,
+                original = site_profiles.len(),
+                deduped = deduped_profiles.len(),
+                skipped = site_profiles.len() - deduped_profiles.len(),
+                "skipping duplicate site profiles"
+            );
+        }
+
+        for profile in deduped_profiles {
             sqlx::query(
                 "INSERT INTO site_profiles (run_id, host, kind, provider, confidence, signals_json) VALUES (?, ?, ?, ?, ?, ?)",
             )
@@ -458,7 +528,18 @@ impl Storage {
             .await?;
         }
 
-        for dead in dead_hosts {
+        let deduped_dead_hosts = dedupe_by_key(dead_hosts, |dead| dead.host.clone());
+        if deduped_dead_hosts.len() != dead_hosts.len() {
+            warn!(
+                run_id = %run_id,
+                original = dead_hosts.len(),
+                deduped = deduped_dead_hosts.len(),
+                skipped = dead_hosts.len() - deduped_dead_hosts.len(),
+                "skipping duplicate dead host records"
+            );
+        }
+
+        for dead in deduped_dead_hosts {
             sqlx::query(
                 "INSERT INTO dead_hosts (run_id, host, reason, source) VALUES (?, ?, ?, 'discovery')",
             )
@@ -1040,6 +1121,98 @@ fn artifact_view_from_row(row: ArtifactRow, presented_run_id: &str) -> ArtifactV
         relative_path: row.relative_path,
         content_type: row.content_type,
         size_bytes: row.size_bytes,
+    }
+}
+
+fn ct_cache_entry_from_row(row: CtSubdomainCacheRow) -> Result<CtSubdomainCacheEntry> {
+    let subdomains: Vec<String> =
+        serde_json::from_str(&row.subdomains_json).with_context(|| {
+            format!(
+                "failed to parse ct subdomain cache for {} from {}",
+                row.domain, row.updated_at
+            )
+        })?;
+
+    Ok(CtSubdomainCacheEntry {
+        domain: row.domain,
+        source: row.source,
+        subdomains,
+        updated_at: row.updated_at,
+    })
+}
+
+fn dedupe_by_key<'a, T, K, F>(items: &'a [T], mut key_fn: F) -> Vec<&'a T>
+where
+    K: Ord,
+    F: FnMut(&T) -> K,
+{
+    let mut seen = BTreeSet::new();
+    let mut deduped = Vec::new();
+
+    for item in items {
+        if seen.insert(key_fn(item)) {
+            deduped.push(item);
+        }
+    }
+
+    deduped
+}
+
+fn dedupe_strings(values: Vec<String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    values
+        .into_iter()
+        .filter(|value| seen.insert(value.clone()))
+        .collect()
+}
+
+#[derive(Debug, Clone)]
+pub struct CtSubdomainCacheEntry {
+    pub domain: String,
+    pub source: String,
+    pub subdomains: Vec<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{dedupe_by_key, dedupe_strings};
+
+    #[derive(Debug)]
+    struct Entry {
+        key: &'static str,
+        value: i32,
+    }
+
+    #[test]
+    fn dedupe_by_key_preserves_first_item_for_each_key() {
+        let items = vec![
+            Entry { key: "a", value: 1 },
+            Entry { key: "a", value: 2 },
+            Entry { key: "b", value: 3 },
+            Entry { key: "c", value: 4 },
+            Entry { key: "b", value: 5 },
+        ];
+
+        let deduped = dedupe_by_key(&items, |entry| entry.key);
+        assert_eq!(deduped.len(), 3);
+        assert_eq!(deduped[0].value, 1);
+        assert_eq!(deduped[1].value, 3);
+        assert_eq!(deduped[2].value, 4);
+    }
+
+    #[test]
+    fn dedupe_strings_preserves_first_item_for_each_value() {
+        let deduped = dedupe_strings(vec![
+            "a.example.com".to_string(),
+            "a.example.com".to_string(),
+            "b.example.com".to_string(),
+        ]);
+
+        assert_eq!(
+            deduped,
+            vec!["a.example.com".to_string(), "b.example.com".to_string()]
+        );
     }
 }
 

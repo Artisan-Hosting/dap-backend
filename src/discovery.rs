@@ -11,19 +11,32 @@ use std::{
     net::{IpAddr, ToSocketAddrs},
     path::PathBuf,
     process::Command,
+    sync::Arc,
+    time::Instant,
 };
 
 use anyhow::{Context, Result};
+use chrono::Utc;
+use native_tls::TlsConnector;
+use postgres_native_tls::MakeTlsConnector;
 use serde_json::json;
+use tokio_postgres::SimpleQueryMessage;
 use tracing::{debug, info, warn};
 
 use crate::{
+    backend::{CtSubdomainCacheEntry, Storage},
     config::{RunConfig, ScopeMode},
     facts::Fact,
 };
 
 /// Hard cap on recursive passive expansion so one sweep cannot run forever.
-const MAX_DISCOVERY_DEPTH: usize = 2;
+const MAX_DISCOVERY_DEPTH: usize = 5;
+const CRTSH_POSTGRES_CONN_STR: &str =
+    "host=crt.sh port=5432 dbname=certwatch user=guest sslmode=require";
+const FETCH_HEADERS_MAX_TIME_SECS: u64 = 2;
+const FETCH_HEADERS_CONNECT_TIMEOUT_SECS: u64 = 2;
+const FETCH_BODY_MAX_TIME_SECS: u64 = 2;
+const FETCH_BODY_CONNECT_TIMEOUT_SECS: u64 = 2;
 
 /// Strong WordPress fingerprints.
 const WORDPRESS_MARKERS: &[&str] = &[
@@ -108,6 +121,69 @@ const VUE_MARKERS: &[&str] = &["__vue__", "vue-app", "data-v-"];
 
 const SVELTEKIT_MARKERS: &[&str] = &["__sveltekit", "sveltekit"];
 
+/// Common WebDAV / calendar / contacts markers.
+const DAV_MARKERS: &[&str] = &[
+    "caldav",
+    "carddav",
+    "webdav",
+    "nextcloud",
+    "owncloud",
+    "mailcow",
+    "sogo",
+];
+
+/// Low-risk API endpoints to try when a host looks alive but the root body is empty.
+const API_ENDPOINT_PROBES: &[&str] = &[
+    "/health",
+    "/healthz",
+    "/ready",
+    "/readyz",
+    "/livez",
+    "/status",
+    "/ping",
+    "/version",
+    "/healthcheck",
+    "/health-check",
+    "/status.json",
+    "/api",
+    "/api/",
+    "/api/v1",
+    "/api/v1/",
+    "/v1",
+    "/v1/health",
+    "/v1/status",
+    "/graphql",
+    "/actuator/health",
+    "/actuator/info",
+    "/openapi.json",
+    "/swagger.json",
+    "/swagger/v1/swagger.json",
+    "/docs",
+    "/api/health",
+    "/api/status",
+    "/.well-known/health",
+    "/.well-known/openid-configuration",
+    "/.well-known/security.txt",
+    "/metrics",
+    "/server-status",
+];
+
+/// Low-risk WebDAV / CalDAV / CardDAV endpoints to try when a host looks like
+/// a DAV-backed service or remains otherwise ambiguous.
+const DAV_ENDPOINT_PROBES: &[&str] = &[
+    "/.well-known/caldav",
+    "/.well-known/carddav",
+    "/remote.php/dav",
+    "/remote.php/dav/",
+    "/remote.php/webdav",
+    "/dav",
+    "/dav/",
+    "/webdav",
+    "/webdav/",
+    "/SOGo/dav",
+    "/SOGo/dav/",
+];
+
 /// Common DKIM selectors worth checking passively.
 const COMMON_DKIM_SELECTORS: &[&str] = &[
     "default",
@@ -126,6 +202,7 @@ pub struct DiscoveryOutcome {
     pub facts: Vec<Fact>,
     pub dead_hosts: Vec<DeadHost>,
     pub site_profiles: Vec<SiteProfile>,
+    pub subdomain_count: usize,
 }
 
 /// Host that failed the liveness probes.
@@ -146,12 +223,86 @@ pub struct SiteProfile {
     pub signals: Vec<String>,
 }
 
-/// Execute the discovery phase and return observed facts plus unreachable hosts.
-pub async fn perform_discovery(cfg: &RunConfig) -> Result<DiscoveryOutcome> {
-    info!(target = %cfg.domain, "starting discovery via dig");
+/// Execute discovery with a DB-backed CT cache.
+pub async fn perform_discovery_with_ct_cache(
+    cfg: &RunConfig,
+    storage: &Storage,
+    ct_cache_ttl_seconds: u64,
+) -> Result<DiscoveryOutcome> {
+    perform_discovery_internal(cfg, Some(storage), ct_cache_ttl_seconds).await
+}
 
+async fn perform_discovery_internal(
+    cfg: &RunConfig,
+    storage: Option<&Storage>,
+    ct_cache_ttl_seconds: u64,
+) -> Result<DiscoveryOutcome> {
+    info!(target = %cfg.domain, "starting discovery via hickory DNS resolver");
+
+    let max_passes = cfg.discovery.max_passes.max(1).min(5);
+    let backoff_ms = cfg.discovery.pass_backoff_ms;
+
+    let mut best_outcome: Option<DiscoveryOutcome> = None;
+    let mut last_count = 0;
+
+    for pass in 1..=max_passes {
+        let outcome = perform_discovery_pass(cfg, storage, ct_cache_ttl_seconds).await?;
+        let pass_count = outcome.subdomain_count;
+
+        info!(
+            target = %cfg.domain,
+            pass = pass,
+            subdomains = pass_count,
+            facts = outcome.facts.len(),
+            dead_hosts = outcome.dead_hosts.len(),
+            "discovery pass complete"
+        );
+
+        if best_outcome.is_none() || pass_count > last_count {
+            best_outcome = Some(outcome.clone());
+            last_count = pass_count;
+        } else if pass_count == last_count && pass < max_passes {
+            // Convergence detected: stop early
+            info!(
+                target = %cfg.domain,
+                pass = pass,
+                converged_at = last_count,
+                "discovery converged, stopping early"
+            );
+            break;
+        }
+
+        // Backoff between passes (except after the last pass)
+        if pass < max_passes {
+            tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
+        }
+    }
+
+    let outcome = best_outcome.unwrap_or_else(|| DiscoveryOutcome {
+        facts: Vec::new(),
+        dead_hosts: Vec::new(),
+        site_profiles: Vec::new(),
+        subdomain_count: 0,
+    });
+
+    info!(
+        target = %cfg.domain,
+        total_facts = outcome.facts.len(),
+        dead_hosts = outcome.dead_hosts.len(),
+        subdomains = outcome.subdomain_count,
+        "discovery phase complete"
+    );
+    Ok(outcome)
+}
+
+/// Execute a single discovery pass and return results.
+async fn perform_discovery_pass(
+    cfg: &RunConfig,
+    storage: Option<&Storage>,
+    ct_cache_ttl_seconds: u64,
+) -> Result<DiscoveryOutcome> {
     let apex = cfg.domain.to_lowercase();
-    let zone_dump = load_zone_dump(&apex);
+    let zone_dump = Arc::new(load_zone_dump(&apex));
 
     let mut facts = Vec::new();
     let mut dead_hosts = Vec::new();
@@ -166,15 +317,43 @@ pub async fn perform_discovery(cfg: &RunConfig) -> Result<DiscoveryOutcome> {
         }
     }
 
-    for host in gather_seed_hosts(cfg, &zone_dump, &apex) {
+    let seed_hosts = gather_seed_hosts(cfg, &zone_dump, &apex);
+    info!(
+        target = %apex,
+        mail_fact_count = facts.len(),
+        mail_profile_count = site_profiles.len(),
+        seed_count = seed_hosts.len(),
+        zone_hosts = zone_dump.hosts().len(),
+        "seeded discovery queue from local DNS and scope hints"
+    );
+    for host in seed_hosts {
         queue.push_back((host, 0));
     }
 
-    for ct_host in query_ct_names(&apex)? {
+    let ct_hosts = query_ct_names(&apex, storage, ct_cache_ttl_seconds).await?;
+    info!(
+        target = %apex,
+        ct_candidate_count = ct_hosts.len(),
+        queued_candidates = queue.len(),
+        "loaded certificate transparency candidates"
+    );
+    for ct_host in ct_hosts {
         if is_host_in_scope(&ct_host, cfg, &apex) {
             queue.push_back((ct_host, 0));
         }
     }
+
+    info!(
+        target = %apex,
+        initial_queue_size = queue.len(),
+        "initial discovery queue populated"
+    );
+
+    let mut inspected_hosts = 0usize;
+    let mut live_hosts = 0usize;
+    let mut zombie_hosts = 0usize;
+    let mut hard_dead_hosts = 0usize;
+    let mut queued_new_hosts = 0usize;
 
     while let Some((host, depth)) = queue.pop_front() {
         if !is_host_in_scope(&host, cfg, &apex) {
@@ -183,10 +362,27 @@ pub async fn perform_discovery(cfg: &RunConfig) -> Result<DiscoveryOutcome> {
         if !visited.insert(host.to_string()) {
             continue;
         }
+        inspected_hosts += 1;
 
-        let host_outcome = inspect_host(&host, &apex, &zone_dump)?;
+        let host_outcome = tokio::task::spawn_blocking({
+            let host = host.clone();
+            let apex = apex.clone();
+            let zone_dump = zone_dump.clone();
+            move || inspect_host(&host, &apex, &zone_dump)
+        })
+        .await
+        .context("host inspection task failed")??;
+        let inspection_new_hosts = host_outcome.new_hosts.len();
+        queued_new_hosts += inspection_new_hosts;
         if let Some(dead) = host_outcome.dead_host {
+            if dead.reason.starts_with("zombie site:") {
+                zombie_hosts += 1;
+            } else {
+                hard_dead_hosts += 1;
+            }
             dead_hosts.push(dead);
+        } else {
+            live_hosts += 1;
         }
 
         facts.extend(host_outcome.facts);
@@ -203,15 +399,26 @@ pub async fn perform_discovery(cfg: &RunConfig) -> Result<DiscoveryOutcome> {
         }
     }
 
+    let subdomain_count = visited.iter().filter(|host| host.as_str() != apex).count();
+
     info!(
+        target = %apex,
+        inspected_hosts = inspected_hosts,
+        live_hosts = live_hosts,
+        zombie_hosts = zombie_hosts,
+        hard_dead_hosts = hard_dead_hosts,
+        queued_new_hosts = queued_new_hosts,
         total_facts = facts.len(),
-        dead_hosts = dead_hosts.len(),
-        "discovery phase complete"
+        site_profiles = site_profiles.len(),
+        subdomains = subdomain_count,
+        "discovery pass summary"
     );
+
     Ok(DiscoveryOutcome {
         facts,
         dead_hosts,
         site_profiles,
+        subdomain_count,
     })
 }
 
@@ -288,9 +495,11 @@ struct HostInspection {
 
 /// Inspect a hostname, capture DNS/web facts, and extract new host candidates.
 fn inspect_host(host: &str, apex: &str, zone_dump: &ZoneDump) -> Result<HostInspection> {
+    debug!(target = %apex, host = %host, "starting host inspection");
     let mut facts = Vec::new();
     let mut new_hosts = BTreeSet::new();
 
+    debug!(target = %apex, host = %host, "checking host liveness");
     let liveness = check_host_liveness(host);
     let mut alive = matches!(liveness, HostLiveness::Alive);
     let mut dead_host = match &liveness {
@@ -303,6 +512,7 @@ fn inspect_host(host: &str, apex: &str, zone_dump: &ZoneDump) -> Result<HostInsp
 
     let cname_target = query_cname_record(host, zone_dump)?;
     if let Some(ref target) = cname_target {
+        debug!(target = %apex, host = %host, cname_target = %target, "observed cname record");
         let cname_attrs = vec![
             ("type".to_string(), json!("CNAME")),
             ("name".to_string(), json!(host)),
@@ -321,6 +531,12 @@ fn inspect_host(host: &str, apex: &str, zone_dump: &ZoneDump) -> Result<HostInsp
 
     let addresses = query_address_records(host, zone_dump)?;
     if !addresses.is_empty() {
+        debug!(
+            target = %apex,
+            host = %host,
+            address_count = addresses.len(),
+            "observed address records"
+        );
         for address in &addresses {
             let family = ip_family(address).unwrap_or("unknown");
             facts.push(Fact::with_attrs(
@@ -342,49 +558,93 @@ fn inspect_host(host: &str, apex: &str, zone_dump: &ZoneDump) -> Result<HostInsp
         let mut surface = None;
         let mut site_profile = None;
         if alive {
+            debug!(target = %apex, host = %host, "fetching root surface snapshot");
             let observed = fetch_surface(host)?;
-            if let Some(reason) = detect_surface_failure(&observed) {
-                alive = false;
-                dead_host = Some(DeadHost {
-                    host: host.to_string(),
-                    reason,
-                });
-            } else {
-                let mut surface_signals = Vec::new();
-                if let Some(text) = observed.body.as_deref() {
-                    for extracted in extract_hosts(text) {
-                        if extracted != host && extracted != apex {
-                            new_hosts.insert(extracted);
-                        }
-                    }
-                    surface_signals.extend(extract_signals(text));
-                }
-                if let Some(ref robots) = observed.robots {
-                    for extracted in extract_hosts(robots) {
-                        if extracted != host && extracted != apex {
-                            new_hosts.insert(extracted);
-                        }
-                    }
-                    surface_signals.extend(extract_signals(robots));
-                }
-                if let Some(ref sitemap) = observed.sitemap {
-                    for extracted in extract_hosts(sitemap) {
-                        if extracted != host && extracted != apex {
-                            new_hosts.insert(extracted);
-                        }
-                    }
-                    surface_signals.extend(extract_signals(sitemap));
-                }
-                if let Some(ref wp_sitemap) = observed.wp_sitemap {
-                    for extracted in extract_hosts(wp_sitemap) {
-                        if extracted != host && extracted != apex {
-                            new_hosts.insert(extracted);
-                        }
-                    }
-                    surface_signals.extend(extract_signals(wp_sitemap));
-                }
+            debug!(
+                target = %apex,
+                host = %host,
+                scheme = %observed.scheme,
+                status_code = ?observed.status_code,
+                has_body = observed.has_body(),
+                content_type = ?observed.content_type,
+                "finished root surface snapshot"
+            );
+            let (surface_hosts, surface_signals) = gather_surface_evidence(host, apex, &observed);
+            new_hosts.extend(surface_hosts);
+            site_profile = classify_site(host, &observed, surface_signals);
 
-                site_profile = classify_site(host, &observed, surface_signals);
+            if should_probe_dav_endpoints(site_profile.as_ref()) {
+                info!(
+                    target = %apex,
+                    host = %host,
+                    endpoint_count = DAV_ENDPOINT_PROBES.len(),
+                    "probing dav endpoints"
+                );
+
+                if let Some(dav_probe) = probe_dav_endpoints(host, &observed.scheme, apex)? {
+                    info!(
+                        target = %apex,
+                        host = %host,
+                        endpoint = %dav_probe.endpoint,
+                        status_code = dav_probe.status_code,
+                        content_type = ?dav_probe.content_type,
+                        "identified dav surface via endpoint probe"
+                    );
+                    site_profile = Some(dav_probe.profile);
+                    new_hosts.extend(dav_probe.new_hosts);
+                }
+            }
+
+            if let Some(reason) = detect_surface_failure(&observed) {
+                if should_probe_api_endpoints(&reason, site_profile.as_ref()) {
+                    info!(
+                        target = %apex,
+                        host = %host,
+                        endpoint_count = API_ENDPOINT_PROBES.len(),
+                        "probing api endpoints after empty root response"
+                    );
+
+                    if let Some(api_probe) = probe_api_endpoints(host, &observed.scheme, apex)? {
+                        info!(
+                            target = %apex,
+                            host = %host,
+                            endpoint = %api_probe.endpoint,
+                            status_code = api_probe.status_code,
+                            content_type = ?api_probe.content_type,
+                            "identified api surface via endpoint probe"
+                        );
+                        site_profile = Some(api_probe.profile);
+                        new_hosts.extend(api_probe.new_hosts);
+                    } else {
+                        alive = false;
+                        dead_host = Some(DeadHost {
+                            host: host.to_string(),
+                            reason,
+                        });
+                    }
+                } else if let Some(profile) = site_profile.as_ref() {
+                    if is_strong_site_profile(profile) {
+                        info!(
+                            target = %apex,
+                            host = %host,
+                            site_type = %profile.kind,
+                            site_provider = ?profile.provider,
+                            "skipping api endpoint probing because site is already classified"
+                        );
+                    } else {
+                        alive = false;
+                        dead_host = Some(DeadHost {
+                            host: host.to_string(),
+                            reason,
+                        });
+                    }
+                } else {
+                    alive = false;
+                    dead_host = Some(DeadHost {
+                        host: host.to_string(),
+                        reason,
+                    });
+                }
             }
 
             surface = Some(observed);
@@ -587,6 +847,13 @@ fn collect_domain_mail_facts(
     }
 
     if !signals.is_empty() {
+        info!(
+            target = %apex,
+            mx_hosts = mx_hosts.len(),
+            signal_count = signals.len(),
+            provider = ?provider,
+            "detected apex mail posture"
+        );
         site_profiles.push(SiteProfile {
             host: apex.to_string(),
             kind: "mail".to_string(),
@@ -622,9 +889,92 @@ fn extract_hosts(text: &str) -> BTreeSet<String> {
     hosts
 }
 
+/// Extract both URL hosts and bare in-scope hostname tokens from surface text.
+fn extract_surface_hosts(text: &str, apex: &str) -> BTreeSet<String> {
+    let mut hosts = extract_hosts(text);
+    hosts.extend(extract_bare_hosts(text, apex));
+    hosts
+}
+
+fn extract_bare_hosts(text: &str, apex: &str) -> BTreeSet<String> {
+    let mut hosts = BTreeSet::new();
+    let apex = canonical_host(apex);
+    let apex_suffix = format!(".{apex}");
+
+    for raw in text.split(|c: char| {
+        c.is_whitespace()
+            || matches!(
+                c,
+                '"' | '\'' | '<' | '>' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';'
+            )
+    }) {
+        let mut token = raw.trim();
+        if token.is_empty() {
+            continue;
+        }
+
+        token = token
+            .trim_start_matches("http://")
+            .trim_start_matches("https://")
+            .trim_start_matches("//")
+            .trim_start_matches("mailto:")
+            .trim_start_matches("*.");
+
+        token = token.split(['/', '?', '#']).next().unwrap_or(token);
+        token = token
+            .trim_matches(|c: char| {
+                matches!(
+                    c,
+                    '"' | '\'' | ',' | ')' | '(' | '<' | '>' | '[' | ']' | '{' | '}' | ';'
+                )
+            })
+            .trim_end_matches('.');
+
+        if token.is_empty() {
+            continue;
+        }
+
+        if let Some((host, port)) = token.rsplit_once(':') {
+            if !port.is_empty() && port.chars().all(|ch| ch.is_ascii_digit()) {
+                token = host;
+            }
+        }
+
+        if !looks_like_bare_hostname(token, &apex, &apex_suffix) {
+            continue;
+        }
+
+        hosts.insert(canonical_host(token));
+    }
+
+    hosts
+}
+
+fn looks_like_bare_hostname(token: &str, apex: &str, apex_suffix: &str) -> bool {
+    if token.is_empty() || token.contains('/') || token.contains('@') {
+        return false;
+    }
+
+    let token = token.trim_end_matches('.');
+    if token.is_empty() || !token.contains('.') {
+        return false;
+    }
+
+    if !token
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-'))
+    {
+        return false;
+    }
+
+    let token = canonical_host(token);
+    token == apex || token.ends_with(apex_suffix)
+}
+
 /// Extract lightweight signal strings that help explain the classification.
 fn extract_signals(text: &str) -> Vec<String> {
     let mut signals = Vec::new();
+    signals.extend(markers_to_signals(text, "dav", DAV_MARKERS));
     signals.extend(markers_to_signals(text, "wordpress", WORDPRESS_MARKERS));
     signals.extend(markers_to_signals(text, "ghost", GHOST_MARKERS));
     signals.extend(markers_to_signals(text, "wix", WIX_MARKERS));
@@ -644,6 +994,55 @@ fn extract_signals(text: &str) -> Vec<String> {
         signals.push("json".to_string());
     }
     signals
+}
+
+fn gather_surface_evidence(
+    host: &str,
+    apex: &str,
+    observed: &SurfaceObservation,
+) -> (BTreeSet<String>, Vec<String>) {
+    let mut new_hosts = BTreeSet::new();
+    let mut surface_signals = Vec::new();
+
+    if let Some(text) = observed.body.as_deref() {
+        for extracted in extract_surface_hosts(text, apex) {
+            if extracted != host && extracted != apex {
+                new_hosts.insert(extracted);
+            }
+        }
+        surface_signals.extend(extract_signals(text));
+    }
+    if let Some(ref robots) = observed.robots {
+        for extracted in extract_surface_hosts(robots, apex) {
+            if extracted != host && extracted != apex {
+                new_hosts.insert(extracted);
+            }
+        }
+        surface_signals.extend(extract_signals(robots));
+    }
+    if let Some(ref sitemap) = observed.sitemap {
+        for extracted in extract_surface_hosts(sitemap, apex) {
+            if extracted != host && extracted != apex {
+                new_hosts.insert(extracted);
+            }
+        }
+        surface_signals.extend(extract_signals(sitemap));
+    }
+    if let Some(ref wp_sitemap) = observed.wp_sitemap {
+        for extracted in extract_surface_hosts(wp_sitemap, apex) {
+            if extracted != host && extracted != apex {
+                new_hosts.insert(extracted);
+            }
+        }
+        surface_signals.extend(extract_signals(wp_sitemap));
+    }
+    for extracted in extract_surface_hosts(&observed.headers_text, apex) {
+        if extracted != host && extracted != apex {
+            new_hosts.insert(extracted);
+        }
+    }
+
+    (new_hosts, surface_signals)
 }
 
 /// Classify a host based on passive headers/body snippets.
@@ -706,6 +1105,17 @@ fn classify_site(
         });
     }
 
+    if let Some((provider, provider_signals)) = detect_dav_provider(&combined, None) {
+        signals.extend(provider_signals);
+        return Some(SiteProfile {
+            host: host.to_string(),
+            kind: "dav".to_string(),
+            provider: Some(provider),
+            confidence: 0.9,
+            signals: dedupe_signals(signals),
+        });
+    }
+
     signals.push("plain".to_string());
     Some(SiteProfile {
         host: host.to_string(),
@@ -714,6 +1124,63 @@ fn classify_site(
         confidence: 0.62,
         signals: dedupe_signals(signals),
     })
+}
+
+fn detect_dav_provider(
+    combined: &str,
+    endpoint_hint: Option<&str>,
+) -> Option<(String, Vec<String>)> {
+    let providers: [(&str, &[&str]); 3] = [
+        (
+            "nextcloud",
+            &[
+                "nextcloud",
+                "ocs/v2.php",
+                "/remote.php/dav",
+                "/remote.php/webdav",
+            ],
+        ),
+        (
+            "owncloud",
+            &["owncloud", "/remote.php/dav", "/remote.php/webdav"],
+        ),
+        ("mailcow", &["mailcow", "sogo", "/SOGo/dav"]),
+    ];
+
+    for (provider, markers) in providers {
+        let signals = markers_to_signals(combined, provider, markers);
+        if !signals.is_empty() {
+            return Some((provider.to_string(), signals));
+        }
+    }
+
+    if let Some(endpoint) = endpoint_hint {
+        let endpoint = endpoint.to_lowercase();
+        if endpoint.contains("remote.php") {
+            return Some((
+                "nextcloud".to_string(),
+                vec![format!("dav-endpoint:{endpoint}")],
+            ));
+        }
+        if endpoint.contains("sogo") {
+            return Some((
+                "mailcow".to_string(),
+                vec![format!("dav-endpoint:{endpoint}")],
+            ));
+        }
+        if endpoint.contains("caldav")
+            || endpoint.contains("carddav")
+            || endpoint.contains("webdav")
+        {
+            return Some(("dav".to_string(), vec![format!("dav-endpoint:{endpoint}")]));
+        }
+    }
+
+    None
+}
+
+fn is_strong_site_profile(profile: &SiteProfile) -> bool {
+    profile.kind != "basic" || profile.provider.is_some()
 }
 
 fn markers_to_signals(text: &str, label: &str, markers: &[&str]) -> Vec<String> {
@@ -796,6 +1263,14 @@ fn dedupe_signals(signals: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+fn dedupe_strings(values: Vec<String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    values
+        .into_iter()
+        .filter(|value| seen.insert(value.clone()))
+        .collect()
+}
+
 fn infer_mail_provider(mx_hosts: &[String], apex: &str) -> Option<String> {
     let providers: [(&str, &[&str]); 11] = [
         (
@@ -873,6 +1348,7 @@ impl SurfaceObservation {
 /// Fetch a small passive snapshot of a host.
 fn fetch_surface(host: &str) -> Result<SurfaceObservation> {
     let scheme = resolve_reachable_scheme(host).unwrap_or("https");
+    debug!(host = %host, scheme = %scheme, "fetching passive surface snapshot");
     let mut surface = SurfaceObservation::default();
     surface.scheme = scheme.to_string();
 
@@ -892,12 +1368,25 @@ fn fetch_surface(host: &str) -> Result<SurfaceObservation> {
 
 /// Get the first reachable scheme for a host.
 fn resolve_reachable_scheme(host: &str) -> Option<&'static str> {
+    debug!(host = %host, "resolving reachable scheme");
     match probe_https(host) {
-        ProbeResult::Success => Some("https"),
-        ProbeResult::Failure(_) => match probe_http(host) {
-            ProbeResult::Success => Some("http"),
-            ProbeResult::Failure(_) => None,
-        },
+        ProbeResult::Success => {
+            debug!(host = %host, scheme = "https", "reachable scheme detected");
+            Some("https")
+        }
+        ProbeResult::Failure(reason) => {
+            debug!(host = %host, scheme = "https", reason = %reason, "https probe failed, trying http");
+            match probe_http(host) {
+                ProbeResult::Success => {
+                    debug!(host = %host, scheme = "http", "reachable scheme detected");
+                    Some("http")
+                }
+                ProbeResult::Failure(reason) => {
+                    debug!(host = %host, scheme = "http", reason = %reason, "http probe failed");
+                    None
+                }
+            }
+        }
     }
 }
 
@@ -912,24 +1401,52 @@ struct HeaderFetch {
 /// Fetch response headers for a path.
 fn fetch_headers(host: &str, scheme: &str, path: &str) -> Result<HeaderFetch> {
     let url = format!("{scheme}://{host}{path}");
+    let started_at = Instant::now();
+    debug!(
+        host = %host,
+        scheme = %scheme,
+        path = %path,
+        max_time_secs = FETCH_HEADERS_MAX_TIME_SECS,
+        connect_timeout_secs = FETCH_HEADERS_CONNECT_TIMEOUT_SECS,
+        "fetching headers"
+    );
     let output = Command::new("curl")
         .arg("-sSIL")
         .arg("--max-time")
-        .arg("8")
+        .arg(FETCH_HEADERS_MAX_TIME_SECS.to_string())
         .arg("--connect-timeout")
-        .arg("3")
+        .arg(FETCH_HEADERS_CONNECT_TIMEOUT_SECS.to_string())
         .arg("--insecure")
+        .arg("--location")
         .arg(url)
         .output()
         .with_context(|| format!("failed to fetch headers for {host}{path}"))?;
 
     if !output.status.success() {
+        debug!(
+            host = %host,
+            scheme = %scheme,
+            path = %path,
+            elapsed_ms = started_at.elapsed().as_millis(),
+            status = ?output.status.code(),
+            stderr = %String::from_utf8_lossy(&output.stderr).trim(),
+            "failed to fetch headers"
+        );
         return Ok(HeaderFetch::default());
     }
 
     let raw = String::from_utf8_lossy(&output.stdout).to_string();
     let status_code = parse_status_code(&raw);
     let headers = parse_headers(&raw);
+    debug!(
+        host = %host,
+        scheme = %scheme,
+        path = %path,
+        elapsed_ms = started_at.elapsed().as_millis(),
+        status_code = ?status_code,
+        header_count = headers.len(),
+        "finished fetching headers"
+    );
     Ok(HeaderFetch {
         raw,
         status_code,
@@ -940,22 +1457,50 @@ fn fetch_headers(host: &str, scheme: &str, path: &str) -> Result<HeaderFetch> {
 /// Fetch response body for a path.
 fn fetch_body(host: &str, scheme: &str, path: &str) -> Result<Option<String>> {
     let url = format!("{scheme}://{host}{path}");
+    let started_at = Instant::now();
+    debug!(
+        host = %host,
+        scheme = %scheme,
+        path = %path,
+        max_time_secs = FETCH_BODY_MAX_TIME_SECS,
+        connect_timeout_secs = FETCH_BODY_CONNECT_TIMEOUT_SECS,
+        "fetching body"
+    );
     let output = Command::new("curl")
         .arg("-sSL")
         .arg("--max-time")
-        .arg("8")
+        .arg(FETCH_BODY_MAX_TIME_SECS.to_string())
         .arg("--connect-timeout")
-        .arg("3")
+        .arg(FETCH_BODY_CONNECT_TIMEOUT_SECS.to_string())
         .arg("--insecure")
+        .arg("--location")
         .arg(url)
         .output()
         .with_context(|| format!("failed to fetch body for {host}{path}"))?;
 
     if !output.status.success() {
+        debug!(
+            host = %host,
+            scheme = %scheme,
+            path = %path,
+            elapsed_ms = started_at.elapsed().as_millis(),
+            status = ?output.status.code(),
+            stderr = %String::from_utf8_lossy(&output.stderr).trim(),
+            "failed to fetch body"
+        );
         return Ok(None);
     }
 
-    Ok(Some(String::from_utf8_lossy(&output.stdout).to_string()))
+    let body = String::from_utf8_lossy(&output.stdout).to_string();
+    debug!(
+        host = %host,
+        scheme = %scheme,
+        path = %path,
+        elapsed_ms = started_at.elapsed().as_millis(),
+        bytes = body.len(),
+        "finished fetching body"
+    );
+    Ok(Some(body))
 }
 
 /// Parse header lines into a map, keeping the last observed value.
@@ -1033,6 +1578,270 @@ fn detect_surface_failure(surface: &SurfaceObservation) -> Option<String> {
     }
 
     None
+}
+
+fn should_probe_api_endpoints(reason: &str, profile: Option<&SiteProfile>) -> bool {
+    reason == "zombie site: blank root response body"
+        && !profile.map(is_strong_site_profile).unwrap_or(false)
+}
+
+fn should_probe_dav_endpoints(profile: Option<&SiteProfile>) -> bool {
+    !profile.map(is_strong_site_profile).unwrap_or(false)
+}
+
+#[derive(Debug)]
+struct ApiProbeResult {
+    endpoint: String,
+    status_code: u16,
+    content_type: Option<String>,
+    profile: SiteProfile,
+    new_hosts: BTreeSet<String>,
+}
+
+fn probe_api_endpoints(host: &str, scheme: &str, apex: &str) -> Result<Option<ApiProbeResult>> {
+    debug!(
+        target = %apex,
+        host = %host,
+        scheme = %scheme,
+        endpoint_count = API_ENDPOINT_PROBES.len(),
+        "starting api endpoint probing"
+    );
+    for endpoint in API_ENDPOINT_PROBES {
+        debug!(
+            target = %apex,
+            host = %host,
+            scheme = %scheme,
+            endpoint = *endpoint,
+            "probing api endpoint headers"
+        );
+        let headers = fetch_headers(host, scheme, endpoint)?;
+        let Some(status_code) = headers.status_code else {
+            debug!(
+                target = %apex,
+                host = %host,
+                endpoint = *endpoint,
+                "api endpoint returned no status code"
+            );
+            continue;
+        };
+
+        if !is_api_endpoint_status(status_code) {
+            debug!(
+                target = %apex,
+                host = %host,
+                endpoint = *endpoint,
+                status_code = status_code,
+                "api endpoint skipped by status filter"
+            );
+            continue;
+        }
+
+        debug!(
+            target = %apex,
+            host = %host,
+            endpoint = *endpoint,
+            status_code = status_code,
+            "api endpoint matched status filter"
+        );
+        let body = fetch_body(host, scheme, endpoint)?;
+        let mut signals = vec![
+            "api-endpoint".to_string(),
+            format!("endpoint:{endpoint}"),
+            format!("status:{status_code}"),
+        ];
+        let mut new_hosts = BTreeSet::new();
+
+        if let Some(content_type) = headers.headers.get("content-type") {
+            signals.push(format!("content-type:{}", content_type.to_lowercase()));
+        }
+
+        for extracted in extract_surface_hosts(&headers.raw, apex) {
+            if extracted != host && extracted != apex {
+                new_hosts.insert(extracted);
+            }
+        }
+
+        if let Some(ref body) = body {
+            signals.extend(extract_signals(body));
+            for extracted in extract_surface_hosts(body, apex) {
+                if extracted != host && extracted != apex {
+                    new_hosts.insert(extracted);
+                }
+            }
+        }
+
+        debug!(
+            target = %apex,
+            host = %host,
+            endpoint = *endpoint,
+            discovered_hosts = new_hosts.len(),
+            "api endpoint probe produced result"
+        );
+
+        return Ok(Some(ApiProbeResult {
+            endpoint: (*endpoint).to_string(),
+            status_code,
+            content_type: headers.headers.get("content-type").cloned(),
+            profile: SiteProfile {
+                host: host.to_string(),
+                kind: "api".to_string(),
+                provider: Some(endpoint.trim_start_matches('/').to_string()),
+                confidence: 0.9,
+                signals: dedupe_signals(signals),
+            },
+            new_hosts,
+        }));
+    }
+
+    Ok(None)
+}
+
+fn is_api_endpoint_status(status_code: u16) -> bool {
+    matches!(status_code, 200 | 204 | 301 | 302 | 307 | 308 | 401 | 403)
+}
+
+#[derive(Debug)]
+struct DavProbeResult {
+    endpoint: String,
+    status_code: u16,
+    content_type: Option<String>,
+    profile: SiteProfile,
+    new_hosts: BTreeSet<String>,
+}
+
+fn probe_dav_endpoints(host: &str, scheme: &str, apex: &str) -> Result<Option<DavProbeResult>> {
+    debug!(
+        target = %apex,
+        host = %host,
+        scheme = %scheme,
+        endpoint_count = DAV_ENDPOINT_PROBES.len(),
+        "starting dav endpoint probing"
+    );
+    for endpoint in DAV_ENDPOINT_PROBES {
+        debug!(
+            target = %apex,
+            host = %host,
+            scheme = %scheme,
+            endpoint = *endpoint,
+            "probing dav endpoint headers"
+        );
+        let headers = fetch_headers(host, scheme, endpoint)?;
+        let Some(status_code) = headers.status_code else {
+            debug!(
+                target = %apex,
+                host = %host,
+                endpoint = *endpoint,
+                "dav endpoint returned no status code"
+            );
+            continue;
+        };
+
+        if !is_dav_endpoint_status(status_code) {
+            debug!(
+                target = %apex,
+                host = %host,
+                endpoint = *endpoint,
+                status_code = status_code,
+                "dav endpoint skipped by status filter"
+            );
+            continue;
+        }
+
+        debug!(
+            target = %apex,
+            host = %host,
+            endpoint = *endpoint,
+            status_code = status_code,
+            "dav endpoint matched status filter"
+        );
+        let body = fetch_body(host, scheme, endpoint)?;
+        let mut signals = vec![
+            "dav-endpoint".to_string(),
+            format!("endpoint:{endpoint}"),
+            format!("status:{status_code}"),
+        ];
+        let mut new_hosts = BTreeSet::new();
+
+        if let Some(content_type) = headers.headers.get("content-type") {
+            signals.push(format!("content-type:{}", content_type.to_lowercase()));
+        }
+
+        for extracted in extract_surface_hosts(&headers.raw, apex) {
+            if extracted != host && extracted != apex {
+                new_hosts.insert(extracted);
+            }
+        }
+
+        if let Some(ref body) = body {
+            signals.extend(extract_signals(body));
+            for extracted in extract_surface_hosts(body, apex) {
+                if extracted != host && extracted != apex {
+                    new_hosts.insert(extracted);
+                }
+            }
+        }
+
+        let profile = classify_dav_profile(host, endpoint, &headers.raw, body.as_deref(), signals);
+        debug!(
+            target = %apex,
+            host = %host,
+            endpoint = *endpoint,
+            discovered_hosts = new_hosts.len(),
+            "dav endpoint probe produced result"
+        );
+
+        return Ok(Some(DavProbeResult {
+            endpoint: (*endpoint).to_string(),
+            status_code,
+            content_type: headers.headers.get("content-type").cloned(),
+            profile,
+            new_hosts,
+        }));
+    }
+
+    Ok(None)
+}
+
+fn is_dav_endpoint_status(status_code: u16) -> bool {
+    matches!(status_code, 200 | 301 | 302 | 307 | 308 | 401 | 403 | 405)
+}
+
+fn classify_dav_profile(
+    host: &str,
+    endpoint: &str,
+    headers_text: &str,
+    body: Option<&str>,
+    mut signals: Vec<String>,
+) -> SiteProfile {
+    let mut combined = String::new();
+    combined.push_str(host);
+    combined.push('\n');
+    combined.push_str(endpoint);
+    combined.push('\n');
+    combined.push_str(&headers_text.to_lowercase());
+    combined.push('\n');
+    if let Some(body) = body {
+        combined.push_str(&body.to_lowercase());
+    }
+
+    if let Some((provider, provider_signals)) = detect_dav_provider(&combined, Some(endpoint)) {
+        signals.extend(provider_signals);
+        return SiteProfile {
+            host: host.to_string(),
+            kind: "dav".to_string(),
+            provider: Some(provider),
+            confidence: 0.92,
+            signals: dedupe_signals(signals),
+        };
+    }
+
+    SiteProfile {
+        host: host.to_string(),
+        kind: "dav".to_string(),
+        provider: Some("dav".to_string()),
+        confidence: 0.84,
+        signals: dedupe_signals(signals),
+    }
 }
 
 fn surface_is_psi_eligible(surface: &SurfaceObservation) -> bool {
@@ -1136,17 +1945,19 @@ struct MxRecord {
 }
 
 fn query_txt_records(name: &str, zone_dump: &ZoneDump) -> Result<Vec<String>> {
-    let records = dig_short(name, Some("TXT"))?;
+    let records = dedupe_strings(dig_short(name, Some("TXT"))?);
     if !records.is_empty() {
         return Ok(records);
     }
 
-    let records = host_short(name, "TXT")?;
+    let records = dedupe_strings(host_short(name, "TXT")?);
     if !records.is_empty() {
         return Ok(records);
     }
 
-    Ok(zone_dump.lookup(name, "TXT").cloned().unwrap_or_default())
+    Ok(dedupe_strings(
+        zone_dump.lookup(name, "TXT").cloned().unwrap_or_default(),
+    ))
 }
 
 fn query_mx_records(name: &str, zone_dump: &ZoneDump) -> Result<Vec<MxRecord>> {
@@ -1199,36 +2010,329 @@ fn parse_mx_record(raw: &str) -> Option<MxRecord> {
     })
 }
 
-fn query_ct_names(domain: &str) -> Result<Vec<String>> {
-    let url = format!("https://crt.sh/?q=%25.{}&output=json", domain);
-    let output = Command::new("curl")
-        .arg("-fsSL")
-        .arg("--max-time")
-        .arg("10")
-        .arg(url)
-        .output()
-        .with_context(|| format!("failed to query crt.sh for {}", domain))?;
-
-    if !output.status.success() {
-        return Ok(Vec::new());
+async fn query_ct_names(
+    domain: &str,
+    storage: Option<&Storage>,
+    ct_cache_ttl_seconds: u64,
+) -> Result<Vec<String>> {
+    if ct_cache_ttl_seconds > 0 {
+        if let Some(storage) = storage {
+            if let Some(cache) = storage.load_ct_subdomain_cache(domain).await? {
+                if ct_cache_is_fresh(&cache, ct_cache_ttl_seconds) {
+                    info!(
+                        domain = %domain,
+                        source = cache.source,
+                        count = cache.subdomains.len(),
+                        cached_at = %cache.updated_at,
+                        "using cached certificate transparency hosts"
+                    );
+                    return Ok(cache.subdomains);
+                }
+            }
+        }
     }
 
-    let raw = String::from_utf8_lossy(&output.stdout);
-    let value: serde_json::Value = match serde_json::from_str(&raw) {
-        Ok(value) => value,
-        Err(err) => {
-            warn!(domain = %domain, error = %err, "failed to parse crt.sh response");
-            return Ok(Vec::new());
+    match query_ct_postgres(domain).await {
+        Ok(Some(hosts)) => {
+            info!(
+                domain = %domain,
+                source = "crt.sh-postgres",
+                count = hosts.len(),
+                "discovered subdomains from crt.sh postgres database"
+            );
+            if ct_cache_ttl_seconds > 0 {
+                if let Some(storage) = storage {
+                    storage
+                        .upsert_ct_subdomain_cache(domain, "crt.sh-postgres", &hosts)
+                        .await?;
+                }
+            }
+            return Ok(hosts);
         }
-    };
+        Ok(None) => {
+            warn!(domain = %domain, "crt.sh postgres database returned no hosts");
+        }
+        Err(err) => {
+            warn!(domain = %domain, error = ?err, "crt.sh postgres database query failed");
+        }
+    }
 
+    let sources = [
+        CtSource {
+            name: "crt.sh",
+            url: format!("https://crt.sh/?q={}&output=json", domain),
+            format: CtResponseFormat::CrtSh,
+        },
+        CtSource {
+            name: "certspotter",
+            url: format!(
+                "https://api.certspotter.com/v1/issuances?domain={}&include_subdomains=true&expand=dns_names",
+                domain
+            ),
+            format: CtResponseFormat::CertSpotter,
+        },
+        CtSource {
+            name: "google transparency report",
+            url: format!(
+                "https://www.google.com/transparencyreport/api/v3/httpsreport/ct/certsearch?domain={}&include_expired=true&include_subdomains=true",
+                domain
+            ),
+            format: CtResponseFormat::GoogleTransparency,
+        },
+    ];
+
+    for source in sources {
+        match fetch_ct_source_async(source.name, &source.url).await {
+            Ok(Some(response)) => {
+                if !response.status_code.starts_with('2') {
+                    warn!(
+                        domain = %domain,
+                        source = source.name,
+                        status = %response.status_code,
+                        "CT source returned non-2xx response"
+                    );
+                    continue;
+                }
+
+                let raw = response.body;
+                if raw.trim().is_empty() {
+                    warn!(domain = %domain, source = source.name, "CT source returned empty body");
+                    continue;
+                }
+
+                let hosts = parse_ct_response(&raw, domain, source.format);
+                if !hosts.is_empty() {
+                    info!(
+                        domain = %domain,
+                        source = source.name,
+                        count = hosts.len(),
+                        "discovered subdomains from certificate transparency"
+                    );
+                    if ct_cache_ttl_seconds > 0 {
+                        if let Some(storage) = storage {
+                            storage
+                                .upsert_ct_subdomain_cache(domain, source.name, &hosts)
+                                .await?;
+                        }
+                    }
+                    return Ok(hosts);
+                }
+
+                warn!(
+                    domain = %domain,
+                    source = source.name,
+                    "CT source returned no matching hosts"
+                );
+            }
+            Ok(None) => {
+                warn!(
+                    domain = %domain,
+                    source = source.name,
+                    "CT source returned no usable response"
+                );
+            }
+            Err(err) => {
+                warn!(domain = %domain, source = source.name, error = %err, "CT source query failed");
+            }
+        }
+    }
+
+    if ct_cache_ttl_seconds > 0 {
+        if let Some(storage) = storage {
+            if let Some(cache) = storage.load_ct_subdomain_cache(domain).await? {
+                if !cache.subdomains.is_empty() {
+                    warn!(
+                        domain = %domain,
+                        source = cache.source,
+                        count = cache.subdomains.len(),
+                        cached_at = %cache.updated_at,
+                        "using stale certificate transparency cache after source failure"
+                    );
+                    return Ok(cache.subdomains);
+                }
+            }
+        }
+    }
+
+    warn!(domain = %domain, "all CT sources failed or returned no hosts, trying DNS-based discovery");
+    Ok(query_dns_wildcard(domain))
+}
+
+async fn fetch_ct_source_async(source_name: &str, url: &str) -> Result<Option<CtFetchResponse>> {
+    let source_name = source_name.to_string();
+    let url = url.to_string();
+    tokio::task::spawn_blocking(move || fetch_ct_source(&source_name, &url))
+        .await
+        .context("ct source fetch task failed")?
+}
+
+async fn query_ct_postgres(domain: &str) -> Result<Option<Vec<String>>> {
+    let connector = TlsConnector::builder()
+        .build()
+        .with_context(|| "failed to build TLS connector for crt.sh postgres")?;
+    let connector = MakeTlsConnector::new(connector);
+
+    let (client, connection) = tokio_postgres::connect(CRTSH_POSTGRES_CONN_STR, connector)
+        .await
+        .with_context(|| "failed to connect to crt.sh postgres database")?;
+
+    tokio::spawn(async move {
+        if let Err(err) = connection.await {
+            warn!(error = %err, "crt.sh postgres connection dropped");
+        }
+    });
+
+    let escaped_domain = escape_sql_literal(domain);
+    let query = format!(
+        "SELECT DISTINCT cai.NAME_VALUE
+         FROM certificate_and_identities cai
+         WHERE plainto_tsquery('certwatch', '{domain}') @@ identities(cai.CERTIFICATE)
+           AND reverse(lower(cai.NAME_VALUE)) LIKE reverse(lower('%.{domain}'))
+         ORDER BY cai.NAME_VALUE",
+        domain = escaped_domain
+    );
+
+    let rows = client
+        .simple_query(&query)
+        .await
+        .with_context(|| format!("failed to query crt.sh postgres database for {domain}"))?;
+
+    let hosts: Vec<String> = rows
+        .into_iter()
+        .filter_map(|message| match message {
+            SimpleQueryMessage::Row(row) => row.get(0).map(ToOwned::to_owned),
+            _ => None,
+        })
+        .map(|value| canonical_host(value.trim_start_matches("*.").trim()))
+        .filter(|value| !value.is_empty() && value.ends_with(domain))
+        .collect();
+
+    Ok(if hosts.is_empty() {
+        None
+    } else {
+        Some(dedupe_strings(hosts))
+    })
+}
+
+fn escape_sql_literal(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+fn ct_cache_is_fresh(cache: &CtSubdomainCacheEntry, ttl_seconds: u64) -> bool {
+    let ttl_seconds = ttl_seconds.min(i64::MAX as u64) as i64;
+    let age_seconds = Utc::now()
+        .signed_duration_since(cache.updated_at)
+        .num_seconds();
+    age_seconds >= 0 && age_seconds <= ttl_seconds
+}
+
+#[derive(Copy, Clone)]
+enum CtResponseFormat {
+    CrtSh,
+    CertSpotter,
+    GoogleTransparency,
+}
+
+struct CtSource {
+    name: &'static str,
+    url: String,
+    format: CtResponseFormat,
+}
+
+struct CtFetchResponse {
+    status_code: String,
+    body: String,
+}
+
+fn fetch_ct_source(source_name: &str, url: &str) -> Result<Option<CtFetchResponse>> {
+    let output = Command::new("curl")
+        .arg("-sS")
+        .arg("--max-time")
+        .arg("20")
+        .arg("--connect-timeout")
+        .arg("10")
+        .arg("--location")
+        .arg("--retry")
+        .arg("2")
+        .arg("--retry-delay")
+        .arg("2")
+        .arg("--user-agent")
+        .arg("artisan-dap/0.1")
+        .arg("--write-out")
+        .arg("\n__HTTP_STATUS__:%{http_code}")
+        .arg(url)
+        .output()
+        .with_context(|| format!("failed to query {source_name}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (body, status_code) = split_body_and_status(&stdout);
+
+    if !output.status.success() {
+        debug!(source = source_name, status = %status_code, "CT source curl execution failed");
+        return Ok(None);
+    }
+
+    Ok(Some(CtFetchResponse {
+        status_code: status_code.to_string(),
+        body: body.to_string(),
+    }))
+}
+
+fn split_body_and_status(raw: &str) -> (&str, &str) {
+    for line in raw.lines().rev() {
+        if let Some(status) = line.strip_prefix("__HTTP_STATUS__:") {
+            let body_len = raw.len().saturating_sub(line.len() + 1);
+            let body = raw.get(..body_len).unwrap_or(raw).trim_end_matches('\n');
+            return (body, status.trim());
+        }
+    }
+
+    (raw, "000")
+}
+
+fn parse_ct_response(raw: &str, domain: &str, format: CtResponseFormat) -> Vec<String> {
     let mut hosts = BTreeSet::new();
-    if let Some(items) = value.as_array() {
-        for item in items {
-            if let Some(name_value) = item.get("name_value").and_then(|value| value.as_str()) {
-                for line in name_value.lines() {
-                    let candidate = canonical_host(line.trim_start_matches("*."));
-                    if !candidate.is_empty() {
+
+    match format {
+        CtResponseFormat::CrtSh => {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) {
+                if let Some(items) = value.as_array() {
+                    for item in items {
+                        if let Some(name_value) = item.get("name_value").and_then(|v| v.as_str()) {
+                            for line in name_value.lines() {
+                                let candidate = canonical_host(line.trim_start_matches("*."));
+                                if !candidate.is_empty() && candidate.ends_with(domain) {
+                                    hosts.insert(candidate);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        CtResponseFormat::CertSpotter => {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) {
+                if let Some(items) = value.as_array() {
+                    for item in items {
+                        if let Some(dns_names) = item.get("dns_names").and_then(|v| v.as_array()) {
+                            for dns_name in dns_names {
+                                if let Some(name) = dns_name.as_str() {
+                                    let candidate = canonical_host(name.trim_start_matches("*."));
+                                    if !candidate.is_empty() && candidate.ends_with(domain) {
+                                        hosts.insert(candidate);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        CtResponseFormat::GoogleTransparency => {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) {
+                for candidate in collect_json_strings(&value) {
+                    let candidate = canonical_host(candidate.trim_start_matches("*."));
+                    if !candidate.is_empty() && candidate.ends_with(domain) {
                         hosts.insert(candidate);
                     }
                 }
@@ -1236,7 +2340,26 @@ fn query_ct_names(domain: &str) -> Result<Vec<String>> {
         }
     }
 
-    Ok(hosts.into_iter().collect())
+    hosts.into_iter().collect()
+}
+
+fn collect_json_strings(value: &serde_json::Value) -> Vec<String> {
+    let mut values = Vec::new();
+    match value {
+        serde_json::Value::String(text) => values.push(text.clone()),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                values.extend(collect_json_strings(item));
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for item in map.values() {
+                values.extend(collect_json_strings(item));
+            }
+        }
+        _ => {}
+    }
+    values
 }
 
 enum HostLiveness {
@@ -1245,22 +2368,33 @@ enum HostLiveness {
 }
 
 fn check_host_liveness(host: &str) -> HostLiveness {
+    debug!(host = %host, "starting host liveness probe");
     let mut reasons = Vec::new();
 
     match probe_https(host) {
-        ProbeResult::Success => return HostLiveness::Alive,
+        ProbeResult::Success => {
+            debug!(host = %host, scheme = "https", "liveness probe succeeded");
+            return HostLiveness::Alive;
+        }
         ProbeResult::Failure(reason) => reasons.push(reason),
     }
 
     match probe_http(host) {
-        ProbeResult::Success => return HostLiveness::Alive,
+        ProbeResult::Success => {
+            debug!(host = %host, scheme = "http", "liveness probe succeeded");
+            return HostLiveness::Alive;
+        }
         ProbeResult::Failure(reason) => reasons.push(reason),
     }
 
     match probe_ping(host) {
-        ProbeResult::Success => HostLiveness::Alive,
+        ProbeResult::Success => {
+            debug!(host = %host, probe = "ping", "liveness probe succeeded");
+            HostLiveness::Alive
+        }
         ProbeResult::Failure(reason) => {
             reasons.push(reason);
+            debug!(host = %host, reason = %reasons.join(" | "), "host classified as dead");
             HostLiveness::Dead(reasons.join(" | "))
         }
     }
@@ -1283,6 +2417,7 @@ fn probe_curl(host: &str, https: bool) -> ProbeResult {
     let scheme = if https { "https" } else { "http" };
     let url = format!("{scheme}://{host}/");
     let mut command = Command::new("curl");
+    let started_at = Instant::now();
     command
         .arg("-I")
         .arg("--max-time")
@@ -1296,27 +2431,55 @@ fn probe_curl(host: &str, https: bool) -> ProbeResult {
         .arg("--insecure")
         .arg(url);
 
-    run_probe(command, &format!("curl {scheme} {host}"))
+    run_probe(command, &format!("curl {scheme} {host}"), Some(started_at))
 }
 
 fn probe_ping(host: &str) -> ProbeResult {
     let mut command = Command::new("ping");
     command.arg("-c").arg("1").arg("-W").arg("1").arg(host);
-    run_probe(command, &format!("ping {host}"))
+    run_probe(command, &format!("ping {host}"), Some(Instant::now()))
 }
 
-fn run_probe(mut command: Command, description: &str) -> ProbeResult {
+fn run_probe(mut command: Command, description: &str, started_at: Option<Instant>) -> ProbeResult {
     match command.output() {
-        Ok(output) if output.status.success() => ProbeResult::Success,
+        Ok(output) if output.status.success() => {
+            if let Some(started_at) = started_at {
+                debug!(
+                    probe = %description,
+                    elapsed_ms = started_at.elapsed().as_millis(),
+                    "probe succeeded"
+                );
+            }
+            ProbeResult::Success
+        }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            if let Some(started_at) = started_at {
+                debug!(
+                    probe = %description,
+                    elapsed_ms = started_at.elapsed().as_millis(),
+                    status = ?output.status.code(),
+                    stderr = %stderr.trim(),
+                    "probe failed"
+                );
+            }
             ProbeResult::Failure(format!(
                 "{description} failed (status {:?}): {}",
                 output.status.code(),
                 stderr.trim()
             ))
         }
-        Err(err) => ProbeResult::Failure(format!("{description} spawn error: {err}")),
+        Err(err) => {
+            if let Some(started_at) = started_at {
+                debug!(
+                    probe = %description,
+                    elapsed_ms = started_at.elapsed().as_millis(),
+                    error = %err,
+                    "probe spawn error"
+                );
+            }
+            ProbeResult::Failure(format!("{description} spawn error: {err}"))
+        }
     }
 }
 
@@ -1385,14 +2548,18 @@ fn system_lookup_ip_addresses(name: &str) -> Vec<String> {
 }
 
 fn dig_short(name: &str, record_type: Option<&str>) -> Result<Vec<String>> {
-    let mut args = Vec::new();
-    args.push(name);
+    let mut args = vec![
+        "@1.1.1.1".to_string(), // Use Cloudflare DNS
+        "+timeout=2".to_string(),
+        "+tries=2".to_string(),
+        "+short".to_string(),
+        "+nocmd".to_string(),
+        name.to_string(),
+    ];
+
     if let Some(rt) = record_type {
-        args.push(rt);
+        args.push(rt.to_string());
     }
-    args.push("+short");
-    args.push("+time=1");
-    args.push("+tries=1");
 
     let output = Command::new("dig")
         .args(&args)
@@ -1403,6 +2570,7 @@ fn dig_short(name: &str, record_type: Option<&str>) -> Result<Vec<String>> {
         debug!(
             command = "dig",
             host = name,
+            record_type = ?record_type,
             status = %output.status,
             "dig command returned non-zero status"
         );
@@ -1413,7 +2581,7 @@ fn dig_short(name: &str, record_type: Option<&str>) -> Result<Vec<String>> {
     let mut lines = Vec::new();
     for line in stdout.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty() {
+        if trimmed.is_empty() || trimmed.starts_with(';') {
             continue;
         }
         let without_dot = trimmed.trim_end_matches('.');
@@ -1428,6 +2596,8 @@ fn dig_short(name: &str, record_type: Option<&str>) -> Result<Vec<String>> {
 
 fn host_short(name: &str, record_type: &str) -> Result<Vec<String>> {
     let output = Command::new("host")
+        .arg("-W")
+        .arg("2")
         .arg("-t")
         .arg(record_type.to_ascii_lowercase())
         .arg(name)
@@ -1689,9 +2859,13 @@ fn canonical_value(record_type: &str, value: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        SurfaceObservation, detect_surface_failure, infer_mail_provider, looks_like_website_body,
-        parse_host_cname_line, parse_host_mx_line, parse_host_txt_line, surface_is_psi_eligible,
+        CtSubdomainCacheEntry, SiteProfile, SurfaceObservation, classify_site, ct_cache_is_fresh,
+        dedupe_strings, detect_surface_failure, extract_surface_hosts, infer_mail_provider,
+        is_api_endpoint_status, is_dav_endpoint_status, looks_like_website_body,
+        parse_host_cname_line, parse_host_mx_line, parse_host_txt_line, should_probe_api_endpoints,
+        should_probe_dav_endpoints, surface_is_psi_eligible,
     };
+    use chrono::{Duration, Utc};
 
     #[test]
     fn detects_google_workspace_mx_provider() {
@@ -1756,4 +2930,160 @@ mod tests {
             Some("proxy.example.net")
         );
     }
+
+    #[test]
+    fn dedupes_strings_preserving_first_occurrence() {
+        assert_eq!(
+            dedupe_strings(vec![
+                "k2".to_string(),
+                "k2".to_string(),
+                "selector1".to_string(),
+                "k2".to_string(),
+            ]),
+            vec!["k2".to_string(), "selector1".to_string()]
+        );
+    }
+
+    #[test]
+    fn ct_cache_freshness_honors_ttl() {
+        let cache = CtSubdomainCacheEntry {
+            domain: "example.com".to_string(),
+            source: "crt.sh".to_string(),
+            subdomains: vec!["a.example.com".to_string()],
+            updated_at: Utc::now() - Duration::seconds(30),
+        };
+
+        assert!(ct_cache_is_fresh(&cache, 60));
+        assert!(!ct_cache_is_fresh(&cache, 10));
+    }
+
+    #[test]
+    fn api_endpoint_status_hints_are_conservative() {
+        assert!(is_api_endpoint_status(200));
+        assert!(is_api_endpoint_status(401));
+        assert!(!is_api_endpoint_status(404));
+        assert!(!is_api_endpoint_status(500));
+    }
+
+    #[test]
+    fn dav_endpoint_status_hints_are_conservative() {
+        assert!(is_dav_endpoint_status(200));
+        assert!(is_dav_endpoint_status(401));
+        assert!(is_dav_endpoint_status(405));
+        assert!(!is_dav_endpoint_status(404));
+        assert!(!is_dav_endpoint_status(500));
+    }
+
+    #[test]
+    fn api_probe_skips_when_site_is_already_classified() {
+        let profile = SiteProfile {
+            host: "artisanhosting.net".to_string(),
+            kind: "basic".to_string(),
+            provider: Some("wordpress".to_string()),
+            confidence: 0.9,
+            signals: vec!["wordpress".to_string()],
+        };
+
+        assert!(!should_probe_api_endpoints(
+            "zombie site: blank root response body",
+            Some(&profile)
+        ));
+    }
+
+    #[test]
+    fn api_probe_runs_for_weak_blank_sites() {
+        let profile = SiteProfile {
+            host: "artisanhosting.net".to_string(),
+            kind: "basic".to_string(),
+            provider: None,
+            confidence: 0.62,
+            signals: vec!["plain".to_string()],
+        };
+
+        assert!(should_probe_api_endpoints(
+            "zombie site: blank root response body",
+            Some(&profile)
+        ));
+    }
+
+    #[test]
+    fn dav_probe_runs_for_weak_blank_sites() {
+        let profile = SiteProfile {
+            host: "artisanhosting.net".to_string(),
+            kind: "basic".to_string(),
+            provider: None,
+            confidence: 0.62,
+            signals: vec!["plain".to_string()],
+        };
+
+        assert!(should_probe_dav_endpoints(Some(&profile)));
+    }
+
+    #[test]
+    fn classifies_nextcloud_markers_as_dav() {
+        let surface = SurfaceObservation {
+            body: Some("nextcloud ocs/v2.php".to_string()),
+            ..SurfaceObservation::default()
+        };
+
+        let profile = classify_site("files.artisanhosting.net", &surface, vec![])
+            .expect("surface should classify");
+        assert_eq!(profile.kind, "dav");
+        assert_eq!(profile.provider.as_deref(), Some("nextcloud"));
+    }
+
+    #[test]
+    fn extracts_bare_hostnames_from_surface_text() {
+        let hosts = extract_surface_hosts(
+            "api.artisanhosting.net dashboard.artisanhosting.net https://docs.artisanhosting.net foo.example.com",
+            "artisanhosting.net",
+        );
+
+        assert!(hosts.contains("api.artisanhosting.net"));
+        assert!(hosts.contains("dashboard.artisanhosting.net"));
+        assert!(hosts.contains("docs.artisanhosting.net"));
+        assert!(!hosts.contains("foo.example.com"));
+    }
+}
+
+fn query_dns_wildcard(domain: &str) -> Vec<String> {
+    let mut hosts = BTreeSet::new();
+
+    // Common subdomain patterns to try
+    let common_subs = [
+        "www",
+        "mail",
+        "smtp",
+        "pop",
+        "imap",
+        "ftp",
+        "admin",
+        "login",
+        "api",
+        "app",
+        "dev",
+        "staging",
+        "test",
+        "portal",
+        "dashboard",
+        "blog",
+        "shop",
+        "store",
+        "support",
+        "help",
+        "docs",
+        "api",
+        "cdn",
+        "static",
+    ];
+
+    for sub in common_subs {
+        let host = format!("{}.{}", sub, domain);
+        if dig_short(&host, Some("A")).is_ok_and(|r| !r.is_empty()) {
+            hosts.insert(canonical_host(&host));
+        }
+    }
+
+    info!(domain = %domain, count = hosts.len(), "discovered subdomains from DNS wildcard");
+    hosts.into_iter().collect()
 }

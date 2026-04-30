@@ -13,6 +13,7 @@ use serde::Serialize;
 use tracing::{info, warn};
 
 use crate::{
+    backend::{Storage, StorageConfig},
     config::RunConfig,
     discovery::{self, DeadHost},
     planner::{PlannerError, RulesEngine},
@@ -31,20 +32,27 @@ pub struct Orchestrator {
     plugins: PluginCatalog,
     runner: Runner,
     run_dirs: RunDirectories,
+    ct_cache_storage: Storage,
+    ct_cache_ttl_seconds: u64,
 }
 
 impl Orchestrator {
-    /// Construct the orchestrator by loading rule definitions and plugin manifests.
-    pub fn new(
+    /// Construct the orchestrator, connect the CT cache storage, and load rule definitions plus plugin manifests.
+    pub async fn new(
         config: RunConfig,
         rules_path: PathBuf,
         plugin_root: PathBuf,
+        storage_config: &StorageConfig,
+        ct_cache_ttl_seconds: u64,
     ) -> Result<Self, OrchestratorError> {
         let rules = RulesEngine::from_file(rules_path)?;
         let plugins = PluginCatalog::discover(&plugin_root)?;
         let python_path = python_env::ensure_python_env().map_err(OrchestratorError::PythonEnv)?;
         let runner = Runner::new(plugin_root, python_path);
         let run_dirs = RunDirectories::create(&config.domain)?;
+        let ct_cache_storage = Storage::connect(storage_config)
+            .await
+            .map_err(OrchestratorError::Storage)?;
 
         Ok(Self {
             config,
@@ -52,6 +60,8 @@ impl Orchestrator {
             plugins,
             runner,
             run_dirs,
+            ct_cache_storage,
+            ct_cache_ttl_seconds,
         })
     }
 
@@ -65,7 +75,12 @@ impl Orchestrator {
             "starting orchestrator run",
         );
 
-        let discovery = discovery::perform_discovery(&self.config).await?;
+        let discovery = discovery::perform_discovery_with_ct_cache(
+            &self.config,
+            &self.ct_cache_storage,
+            self.ct_cache_ttl_seconds,
+        )
+        .await?;
         info!(
             total_facts = discovery.facts.len(),
             dead_hosts = discovery.dead_hosts.len(),
@@ -92,11 +107,22 @@ impl Orchestrator {
             .collect();
 
         let planned = self.rules.plan(&discovery.facts);
-        info!(tests = planned.len(), "planner scheduled tests");
+        let (main_planned, api_planned): (Vec<_>, Vec<_>) = planned
+            .into_iter()
+            .partition(|planned| !crate::tests::runs_in_late_phase(&planned.test_id.0));
+        let api_tests = api_planned.len();
+        info!(
+            main_tests = main_planned.len(),
+            api_tests = api_tests,
+            "planner scheduled tests"
+        );
 
         let mut summary: BTreeMap<String, Vec<SubdomainResultSummary>> = BTreeMap::new();
 
-        for planned_test in planned {
+        if !main_planned.is_empty() {
+            info!(tests = main_planned.len(), "starting main test phase");
+        }
+        for planned_test in main_planned {
             let output = self.execute_test(planned_test, &dead_host_map).await?;
             summary
                 .entry(output.test_id.0.clone())
@@ -107,6 +133,25 @@ impl Orchestrator {
                     severity: output.severity.clone(),
                     notes: output.notes.clone(),
                 });
+        }
+
+        if api_tests > 0 {
+            info!(tests = api_tests, "starting deferred api fuzz phase");
+        }
+        for planned_test in api_planned {
+            let output = self.execute_test(planned_test, &dead_host_map).await?;
+            summary
+                .entry(output.test_id.0.clone())
+                .or_default()
+                .push(SubdomainResultSummary {
+                    target: output.target.clone(),
+                    status: output.status.clone(),
+                    severity: output.severity.clone(),
+                    notes: output.notes.clone(),
+                });
+        }
+        if api_tests > 0 {
+            info!("completed deferred api fuzz phase");
         }
 
         let summary_path = self.run_dirs.record_summary(&summary)?;
@@ -145,21 +190,23 @@ impl Orchestrator {
             .unwrap_or_else(|| self.config.domain.clone());
         let target_key = target.to_lowercase();
 
-        if let Some(reason) = dead_hosts.get(&target_key) {
-            let output = TestOutput::placeholder(
-                test_id.0,
-                target,
-                TestStatus::Skipped,
-                format!("host marked dead: {reason}"),
-            );
-            let path = self.run_dirs.record_result(&output)?;
-            info!(
-                test_id = %output.test_id.0,
-                target = %output.target,
-                result_path = %path.display(),
-                "test skipped due to dead host",
-            );
-            return Ok(output);
+        if !crate::tests::runs_on_dead_host(&test_id.0) {
+            if let Some(reason) = dead_hosts.get(&target_key) {
+                let output = TestOutput::placeholder(
+                    test_id.0,
+                    target,
+                    TestStatus::Skipped,
+                    format!("host marked dead: {reason}"),
+                );
+                let path = self.run_dirs.record_result(&output)?;
+                info!(
+                    test_id = %output.test_id.0,
+                    target = %output.target,
+                    result_path = %path.display(),
+                    "test skipped due to dead host",
+                );
+                return Ok(output);
+            }
         }
 
         let Some(record) = self.plugins.get(&test_id) else {
@@ -233,6 +280,8 @@ pub enum OrchestratorError {
     Io(#[from] std::io::Error),
     #[error("failed to provision python environment: {0}")]
     PythonEnv(anyhow::Error),
+    #[error("failed to connect ct cache storage: {0}")]
+    Storage(anyhow::Error),
 }
 
 /// Tracks filesystem locations for the current run.

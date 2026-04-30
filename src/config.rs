@@ -23,6 +23,9 @@ pub struct RunConfig {
     /// Controls whether we sweep the full domain or limit tests to a single site.
     #[serde(default)]
     pub scope: ScopeConfig,
+    /// Discovery stabilization (multi-pass retries, backoff, convergence).
+    #[serde(default)]
+    pub discovery: DiscoveryConfig,
     /// Optional PageSpeed Insights configuration.
     #[serde(default)]
     pub psi: Option<PsiConfig>,
@@ -32,6 +35,26 @@ pub struct RunConfig {
     /// Reporting knobs (formats, asset paths).
     #[serde(default)]
     pub report: ReportConfig,
+}
+
+/// Discovery stabilization settings to handle data-source variability.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DiscoveryConfig {
+    /// Maximum number of discovery passes (attempts to discover subdomains).
+    #[serde(default = "default_discovery_max_passes")]
+    pub max_passes: usize,
+    /// Backoff in milliseconds between discovery passes.
+    #[serde(default = "default_discovery_pass_backoff_ms")]
+    pub pass_backoff_ms: u64,
+}
+
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            max_passes: default_discovery_max_passes(),
+            pass_backoff_ms: default_discovery_pass_backoff_ms(),
+        }
+    }
 }
 
 /// Defines how widely the backend worker should explore hosts for a run.
@@ -179,4 +202,12 @@ fn default_per_host_concurrency() -> usize {
 
 fn default_report_formats() -> Vec<String> {
     vec!["json".into(), "html".into()]
+}
+
+fn default_discovery_max_passes() -> usize {
+    3
+}
+
+fn default_discovery_pass_backoff_ms() -> u64 {
+    2000
 }

@@ -56,6 +56,9 @@ pub struct CacheConfig {
     pub freshness_window_seconds: u64,
     #[serde(default = "default_true")]
     pub dedupe_inflight: bool,
+    /// TTL for cached certificate-transparency subdomain lookups.
+    #[serde(default = "default_ct_subdomain_cache_ttl_seconds")]
+    pub ct_subdomain_cache_ttl_seconds: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,6 +193,7 @@ impl BackendConfig {
             include: self.engine.include.clone(),
             exclude: self.engine.exclude.clone(),
             scope,
+            discovery: Default::default(),
             psi: self.engine.psi.clone(),
             execution: self.engine.execution.clone(),
             report: self.engine.report.clone(),
@@ -247,4 +251,8 @@ fn default_worker_poll_interval_ms() -> u64 {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_ct_subdomain_cache_ttl_seconds() -> u64 {
+    24 * 60 * 60
 }
