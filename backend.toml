@@ -9,6 +9,7 @@ host = "10.3.0.2"
 port = 3306
 database = "dynamic_audit_platform"
 username = "artisan_dap"
+# Ahh everyones leaked a password once right ?
 password = "E*j$A^52734svN^$83N9"
 max_connections = 10
 

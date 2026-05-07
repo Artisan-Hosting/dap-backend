@@ -24,7 +24,6 @@ except ImportError as exc:  # pragma: no cover
 from shared.plugin_context import resolve_entity_values
 
 DNSBLS = [
-    ("Spamhaus ZEN", "zen.spamhaus.org"),
     ("Spamcop", "bl.spamcop.net"),
     ("Barracuda", "b.barracudacentral.org"),
     ("PSBL", "psbl.surriel.com"),
